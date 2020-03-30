@@ -3,82 +3,100 @@
 
 import argparse
 
+from tqdm import tqdm
+
 import numpy as np
+from scipy import sparse
 import torch
 import torch.nn as nn
-import visdom
+import torch.nn.functional as F
 
 import pyro
 import pyro.distributions as dist
 from pyro.infer import SVI, JitTrace_ELBO, Trace_ELBO
 from pyro.optim import Adam
-from utils.mnist_cached import MNISTCached as MNIST
-from utils.mnist_cached import setup_data_loaders
-from utils.vae_plots import mnist_test_tsne, plot_llk, plot_vae_samples
+
+from utils.npmi import compute_npmi_at_n_during_training
+
+def load_sparse(input_filename):
+    npy = np.load(input_filename)
+    coo_matrix = sparse.coo_matrix(
+        (npy['data'], (npy['row'], npy['col'])), shape=npy['shape']
+    )
+    return coo_matrix.tocsc()
 
 
 # define the PyTorch module that parameterizes the
 # diagonal gaussian distribution q(z|x)
 class Encoder(nn.Module):
-    def __init__(self, z_dim, hidden_dim):
+    def __init__(self, args):
         super().__init__()
-        # setup the three linear transformations used
-        self.fc1 = nn.Linear(784, hidden_dim)
-        self.fc21 = nn.Linear(hidden_dim, z_dim)
-        self.fc22 = nn.Linear(hidden_dim, z_dim)
-        # setup the non-linearities
-        self.softplus = nn.Softplus()
+
+        # setup linear transformations
+        self.en_fc1 = nn.Linear(args.vocab_size, args.encoder_hidden_dim)
+        self.en_fc1_drop = nn.Dropout(args.encoder_dropout)
+
+        self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
+        self.alpha_bn_layer = nn.BatchNorm1d(
+            args.num_topics#, eps=0.001, momentum=0.001, affine=True
+        )
+
+        # Do not use BN scale params (seems to help)
+        self.alpha_bn_layer.weight.data.copy_(torch.ones(args.num_topics))
+        self.alpha_bn_layer.weight.requires_grad = False
 
     def forward(self, x):
-        # define the forward computation on the image x
-        # first shape the mini-batch to have pixels in the rightmost dimension
-        x = x.reshape(-1, 784)
-        # then compute the hidden units
-        hidden = self.softplus(self.fc1(x))
-        # then return a mean vector and a (positive) square root covariance
-        # each of size batch_size x z_dim
-        z_loc = self.fc21(hidden)
-        z_scale = torch.exp(self.fc22(hidden))
-        return z_loc, z_scale
+        en1 = F.relu(self.en_fc1(x))
+        en1_do = self.en_fc1_drop(en1)
+
+        alpha = self.alpha_layer(en1_do)
+        alpha_bn = self.alpha_bn_layer(alpha)
+
+        alpha_pos = torch.max(
+            F.softplus(alpha_bn),
+            torch.tensor(0.00001, device=alpha_bn.device)
+        )
+        return alpha_pos
 
 
 # define the PyTorch module that parameterizes the
 # observation likelihood p(x|z)
 class Decoder(nn.Module):
-    def __init__(self, z_dim, hidden_dim):
+    def __init__(self, args):
         super().__init__()
-        # setup the two linear transformations used
-        self.fc1 = nn.Linear(z_dim, hidden_dim)
-        self.fc21 = nn.Linear(hidden_dim, 784)
-        # setup the non-linearities
-        self.softplus = nn.Softplus()
+        self.beta_layer = nn.Linear(args.num_topics, args.vocab_size)
+        self.beta_bn_layer = nn.BatchNorm1d(args.vocab_size)
+        
+        # Do not use BN scale parameters
+        self.beta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
+        self.beta_bn_layer.weight.requires_grad = False
 
     def forward(self, z):
-        # define the forward computation on the latent z
-        # first compute the hidden units
-        hidden = self.softplus(self.fc1(z))
-        # return the parameter for the output Bernoulli
-        # each is of size batch_size x 784
-        loc_img = torch.sigmoid(self.fc21(hidden))
-        return loc_img
+        eta = self.beta_layer(z)
+        eta_bn = self.beta_bn_layer(eta)
+        x_recon = F.softmax(eta_bn, dim=-1)#.log()
+        return x_recon
+
+    @property
+    def topics(self):
+        return self.beta_layer.weight.T.cpu().detach().numpy()
 
 
 # define a PyTorch module for the VAE
 class VAE(nn.Module):
-    # by default our latent space is 50-dimensional
-    # and we use 400 hidden units
-    def __init__(self, z_dim=50, hidden_dim=400, use_cuda=False):
+    def __init__(self, args):
         super().__init__()
         # create the encoder and decoder networks
-        self.encoder = Encoder(z_dim, hidden_dim)
-        self.decoder = Decoder(z_dim, hidden_dim)
+        self.encoder = Encoder(args)
+        self.decoder = Decoder(args)
 
-        if use_cuda:
+        if args.cuda:
             # calling cuda() here will put all the parameters of
             # the encoder and decoder networks into gpu memory
             self.cuda()
-        self.use_cuda = use_cuda
-        self.z_dim = z_dim
+        self.use_cuda = args.cuda
+        self.num_topics = args.num_topics
+        self.alpha_prior = args.alpha_prior
 
     # define the model p(x|z)p(z)
     def model(self, x):
@@ -86,16 +104,17 @@ class VAE(nn.Module):
         pyro.module("decoder", self.decoder)
         with pyro.plate("data", x.shape[0]):
             # setup hyperparameters for prior p(z)
-            z_loc = torch.zeros(x.shape[0], self.z_dim, dtype=x.dtype, device=x.device)
-            z_scale = torch.ones(x.shape[0], self.z_dim, dtype=x.dtype, device=x.device)
+            alpha_0 = torch.ones(
+                x.shape[0], self.num_topics, device=x.device
+            ) * self.alpha_prior
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            z = pyro.sample("latent", dist.Normal(z_loc, z_scale).to_event(1))
+            z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
-            loc_img = self.decoder.forward(z)
-            # score against actual images
-            pyro.sample("obs", dist.Bernoulli(loc_img).to_event(1), obs=x.reshape(-1, 784))
-            # return the loc so we can visualize it later
-            return loc_img
+            x_recon = self.decoder(z)
+            # score against actual data (TODO: is using multinomial like this ok?)
+            pyro.sample("obs", dist.Multinomial(args.max_doc_length, x_recon), obs=x)
+            
+            return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
     def guide(self, x):
@@ -103,114 +122,130 @@ class VAE(nn.Module):
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
-            z_loc, z_scale = self.encoder.forward(x)
+            z = self.encoder(x)
             # sample the latent code z
-            pyro.sample("latent", dist.Normal(z_loc, z_scale).to_event(1))
-
-    # define a helper function for reconstructing images
-    def reconstruct_img(self, x):
-        # encode image x
-        z_loc, z_scale = self.encoder(x)
-        # sample in latent space
-        z = dist.Normal(z_loc, z_scale).sample()
-        # decode the image (note we don't sample in image space)
-        loc_img = self.decoder(z)
-        return loc_img
+            pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
 def main(args):
     # clear param store
     pyro.clear_param_store()
+    np.random.seed(args.seed)
+    pyro.set_rng_seed(args.seed)
+    pyro.enable_validation(__debug__)
 
-    # setup MNIST data loaders
-    # train_loader, test_loader
-    train_loader, test_loader = setup_data_loaders(MNIST, use_cuda=args.cuda, batch_size=256)
+    # load the data
+    data = load_sparse(args.counts_fpath)
+    data = torch.tensor(data.todense(), dtype=torch.float32)
+    args.vocab_size = data.shape[1]
+    args.max_doc_length = int(data.max())
+    if args.dev_split > 0:
+        split_idx = np.random.choice(
+            (True, False),
+            size=data.shape[0],
+            p=(1-args.dev_split, args.dev_split),
+        )
+        x_train, x_dev = data[split_idx], data[~split_idx]
+        n_train, n_dev = x_train.shape[0], x_dev.shape[0]
+    else:
+        n_train = data.shape[0]
+        x_train = data
+
+    # load the vocabulary
+    if args.vocab_fpath is not None:
+        import json
+        with open(args.vocab_fpath) as infile:
+            vocab = json.load(infile)
+            inv_vocab = dict(zip(vocab.values(), vocab.keys()))
 
     # setup the VAE
-    vae = VAE(use_cuda=args.cuda)
+    vae = VAE(args)
 
     # setup the optimizer
-    adam_args = {"lr": args.learning_rate}
+    adam_args = {
+        "lr": args.learning_rate,
+        "betas": (0.99, 0.999), # from ProdLDA
+    }
     optimizer = Adam(adam_args)
 
     # setup the inference algorithm
     elbo = JitTrace_ELBO() if args.jit else Trace_ELBO()
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
-    # setup visdom for visualization
-    if args.visdom_flag:
-        vis = visdom.Visdom()
-
     train_elbo = []
-    test_elbo = []
+    dev_metrics = {
+        "loss": np.inf,
+        "npmi": 0,
+    }
+
     # training loop
     for epoch in range(args.num_epochs):
         # initialize loss accumulator
+        x_train = x_train[np.random.choice(n_train, size=n_train, replace=False)] #shuffle
+        train_batches = n_train // args.batch_size
+
         epoch_loss = 0.
-        # do a training epoch over each mini-batch x returned
-        # by the data loader
-        for x, _ in train_loader:
+        for i in range(train_batches):
             # if on GPU put mini-batch into CUDA memory
+            x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
             if args.cuda:
-                x = x.cuda()
+                x_batch = x_batch.cuda()
             # do ELBO gradient and accumulate loss
-            epoch_loss += svi.step(x)
+            epoch_loss += svi.step(x_batch)
 
         # report training diagnostics
-        normalizer_train = len(train_loader.dataset)
-        total_epoch_loss_train = epoch_loss / normalizer_train
-        train_elbo.append(total_epoch_loss_train)
-        print("[epoch %03d]  average training loss: %.4f" % (epoch, total_epoch_loss_train))
+        epoch_loss /= n_train
+        train_elbo.append(epoch_loss)
+        print(f"{epoch}  average training loss: {epoch_loss:0.4f}")
 
-        if epoch % args.test_frequency == 0:
-            # initialize loss accumulator
-            test_loss = 0.
-            # compute the loss over the entire test set
-            for i, (x, _) in enumerate(test_loader):
-                # if on GPU put mini-batch into CUDA memory
+        # evaluate on the dev set
+        if args.dev_split > 0 and epoch % args.eval_step == 0:
+            eval_batches = n_dev // args.batch_size
+            
+            # get loss
+            dev_loss = 0.
+            for i in range(eval_batches):
+                x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
-                    x = x.cuda()
-                # compute ELBO estimate and accumulate loss
-                test_loss += svi.evaluate_loss(x)
+                    x_batch = x_batch.cuda()
+                dev_loss += svi.evaluate_loss(x_batch)
 
-                # pick three random test images from the first mini-batch and
-                # visualize how well we're reconstructing them
-                if i == 0:
-                    if args.visdom_flag:
-                        plot_vae_samples(vae, vis)
-                        reco_indices = np.random.randint(0, x.shape[0], 3)
-                        for index in reco_indices:
-                            test_img = x[index, :]
-                            reco_img = vae.reconstruct_img(test_img)
-                            vis.image(test_img.reshape(28, 28).detach().cpu().numpy(),
-                                      opts={'caption': 'test image'})
-                            vis.image(reco_img.reshape(28, 28).detach().cpu().numpy(),
-                                      opts={'caption': 'reconstructed image'})
+            dev_loss /= n_dev
 
-            # report test diagnostics
-            normalizer_test = len(test_loader.dataset)
-            total_epoch_loss_test = test_loss / normalizer_test
-            test_elbo.append(total_epoch_loss_test)
-            print("[epoch %03d]  average test loss: %.4f" % (epoch, total_epoch_loss_test))
+            # get npmi
+            beta = vae.decoder.topics
+            npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words)
 
-        if epoch == args.tsne_iter:
-            mnist_test_tsne(vae=vae, test_loader=test_loader)
-            plot_llk(np.array(train_elbo), np.array(test_elbo))
+            dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
+            dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
 
-    return vae
+            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}")
+    
+    return vae, dev_metrics
 
 
 if __name__ == '__main__':
     assert pyro.__version__.startswith('1.3.0')
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
-    parser.add_argument('-n', '--num-epochs', default=101, type=int, help='number of training epochs')
-    parser.add_argument('-tf', '--test-frequency', default=5, type=int, help='how often we evaluate the test set')
-    parser.add_argument('-lr', '--learning-rate', default=1.0e-3, type=float, help='learning rate')
+    parser.add_argument("-i", "--counts-fpath", default=None)
+    parser.add_argument("--vocab-fpath", default=None)
+    parser.add_argument("--dev-split", default=0.2, type=float)
+    
+    parser.add_argument("-k", "--num-topics", default=50, type=int)
+    parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
+    parser.add_argument("--encoder-hidden-dim", default=100, type=int)
+    parser.add_argument("--encoder-dropout", default=0.2, type=float)
+    parser.add_argument("--alpha-prior", default=0.02, type=float)
+
+    parser.add_argument("-b", "--batch-size", default=200, type=int)
+    parser.add_argument("-n", '--num-epochs', default=101, type=int, help='number of training epochs')
+    parser.add_argument("--eval-step", default=1, type=int)
+    parser.add_argument("--npmi-words", default=10, type=int)
+    parser.add_argument("--seed", default=42, type=int)
     parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')
     parser.add_argument('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
-    parser.add_argument('-visdom', '--visdom_flag', action="store_true", help='Whether plotting in visdom is desired')
-    parser.add_argument('-i-tsne', '--tsne_iter', default=100, type=int, help='epoch when tsne visualization runs')
     args = parser.parse_args()
 
     model = main(args)
+    import ipdb; ipdb.set_trace()

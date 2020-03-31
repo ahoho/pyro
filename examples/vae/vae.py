@@ -65,14 +65,14 @@ class Encoder(nn.Module):
 
         self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
         self.alpha_bn_layer = nn.BatchNorm1d(
-            args.num_topics#, eps=0.001, momentum=0.001, affine=True
+            args.num_topics, eps=0.001, momentum=0.001, affine=True
         )
 
         # Do not use BN scale params (seems to help)
         self.alpha_bn_layer.weight.data.copy_(torch.ones(args.num_topics))
         self.alpha_bn_layer.weight.requires_grad = False
 
-    def forward(self, x):
+    def forward(self, x, annealing_factor=1.0):
         embedded = F.relu(self.embedding_layer(x))
         hidden = F.relu(self.fc(embedded))
         hidden_do = self.fc_drop(hidden)
@@ -97,18 +97,20 @@ class Decoder(nn.Module):
 
         self.eta_layer = nn.Linear(args.num_topics, args.vocab_size)
         self.eta_bn_layer = nn.BatchNorm1d(
-            args.vocab_size#, eps=0.001, momentum=0.001, affine=True
+            args.vocab_size, eps=0.001, momentum=0.001, affine=True
         )
         
         # Do not use BN scale parameters
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
         self.eta_bn_layer.weight.requires_grad = False
 
-    def forward(self, z):
+    def forward(self, z, annealing_factor=1.0):
         z_do = self.z_drop(z)
         eta = self.eta_layer(z_do)
         eta_bn = self.eta_bn_layer(eta)
-        x_recon = F.softmax(eta_bn, dim=-1)
+
+        x_recon = (annealing_factor) * F.softmax(eta, dim=-1) + (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
+        # x_recon = F.softmax(eta_bn, dim=-1)
         return x_recon
     
     @property
@@ -151,10 +153,10 @@ class VAE(nn.Module):
                 x.shape[0], self.num_topics, device=x.device
             ) * self.alpha_prior
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            with pyro.poutine.scale(None, annealing_factor):
-                z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
+            # with pyro.poutine.scale(None, annealing_factor):
+            z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
-            x_recon = self.decoder(z)
+            x_recon = self.decoder(z, annealing_factor)
             # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
@@ -168,8 +170,8 @@ class VAE(nn.Module):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
-            with pyro.poutine.scale(None, annealing_factor):
-                pyro.sample("doc_topics", dist.Dirichlet(z))
+            #with pyro.poutine.scale(None, annealing_factor):
+            pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
 def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
@@ -269,6 +271,7 @@ def main(args):
             if args.cuda:
                 x_batch = x_batch.cuda()
             # do ELBO gradient and accumulate loss
+            annealing_factor = torch.tensor(annealing_factor, device=x_batch.device)
             epoch_loss += svi.step(x_batch, annealing_factor)
 
         # report training diagnostics
@@ -304,6 +307,7 @@ def main(args):
 
             print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}")
     
+    import ipdb; ipdb.set_trace()
     return vae, dev_metrics
 
 
@@ -342,4 +346,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     model, metrics = main(args)
-    import ipdb; ipdb.set_trace()

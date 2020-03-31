@@ -76,7 +76,9 @@ class Decoder(nn.Module):
         self.z_drop = nn.Dropout(args.decoder_dropout) # TODO: re-softmax?
 
         self.eta_layer = nn.Linear(args.num_topics, args.vocab_size)
-        self.eta_bn_layer = nn.BatchNorm1d(args.vocab_size)
+        self.eta_bn_layer = nn.BatchNorm1d(
+            args.vocab_size#, eps=0.001, momentum=0.001, affine=True
+        )
         
         # Do not use BN scale parameters
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
@@ -120,7 +122,7 @@ class VAE(nn.Module):
         self.alpha_prior = args.alpha_prior
 
     # define the model p(x|z)p(z)
-    def model(self, x):
+    def model(self, x, annealing_factor=1.0):
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
         with pyro.plate("data", x.shape[0]):
@@ -133,40 +135,42 @@ class VAE(nn.Module):
             # decode the latent code z
             x_recon = self.decoder(z)
             # score against actual data
-            pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
+            with pyro.poutine.scale(None, annealing_factor):
+                pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x):
+    def guide(self, x, annealing_factor=1.0):
         # register PyTorch module `encoder` with Pyro
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
-            pyro.sample("doc_topics", dist.Dirichlet(z))
+            with pyro.poutine.scale(None, annealing_factor):
+                pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
-def load_json(fpath):
-    with open(fpath) as infile:
-        return json.load(infile)
-
-
-def load_embeddings(fpath, vocab):
+def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
     """
-    Load word embeddings and align with vocabulary
+    Calculate annealing factor. Taken from /examples/dmm.py
     """
-    pretrained = np.load(Path(fpath, "vectors.npy"))
-    pretrained_vocab = load_json(Path(fpath, "vocab.json"))
-    embeddings = np.random.rand(pretrained.shape[1], len(vocab)) * 0.25 - 5
+    # annealing
+    if args.annealing_epochs > 0 and epoch < args.annealing_epochs:
+        # taken from examples/dmm.py
+        min_af = args.minimum_annealing_factor
+        annealing_factor = (
+            min_af + (1.0 - min_af) *
+            (
+                (minibatch + epoch * batches_per_epoch + 1) /
+                (args.annealing_epochs * batches_per_epoch)
+            )
+        )
+    else:
+        annealing_factor = 1.0
 
-    for word, idx in vocab.items():
-        if word in pretrained_vocab:
-            embeddings[:, idx] = pretrained[pretrained_vocab[word], :]
-
-    return embeddings
-
+    return annealing_factor
 
 def main(args):
     # clear param store
@@ -239,12 +243,14 @@ def main(args):
 
         epoch_loss = 0.
         for i in range(train_batches):
+            annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
+
             # if on GPU put mini-batch into CUDA memory
             x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
             if args.cuda:
                 x_batch = x_batch.cuda()
             # do ELBO gradient and accumulate loss
-            epoch_loss += svi.step(x_batch)
+            epoch_loss += svi.step(x_batch, annealing_factor)
 
         # report training diagnostics
         epoch_loss /= n_train
@@ -258,10 +264,11 @@ def main(args):
             # get loss
             dev_loss = 0.
             for i in range(eval_batches):
+                annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()
-                dev_loss += svi.evaluate_loss(x_batch)
+                dev_loss += svi.evaluate_loss(x_batch, annealing_factor)
 
             dev_loss /= n_dev
 
@@ -304,6 +311,8 @@ if __name__ == '__main__':
     parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)
     parser.add_argument("-n", '--num-epochs', default=101, type=int)
+    parser.add_argument("--annealing-epochs", default=50, type=int)
+    parser.add_argument("--minimum-annealing-factor", default=0.01, type=float)
     
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)

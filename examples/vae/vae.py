@@ -16,7 +16,7 @@ import pyro.distributions as dist
 from pyro.infer import SVI, JitTrace_ELBO, Trace_ELBO
 from pyro.optim import Adam
 
-from utils.npmi import compute_npmi_at_n_during_training
+from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tu
 
 def load_sparse(input_filename):
     npy = np.load(input_filename)
@@ -195,6 +195,7 @@ def main(args):
     dev_metrics = {
         "loss": np.inf,
         "npmi": 0,
+        "tu": 0,
     }
 
     # training loop
@@ -235,10 +236,15 @@ def main(args):
             beta = vae.decoder.topics
             npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words)
 
+            # finally, topic-uniqueness
+            topics = [word_probs.argsort()[::-1] for word_probs in beta]
+            tu = np.mean(compute_tu(topics, l=args.tu_words))
+
             dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
+            dev_metrics['tu'] = max(tu, dev_metrics['tu'])
 
-            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}")
+            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}")
     
     return vae, dev_metrics
 
@@ -262,10 +268,11 @@ if __name__ == '__main__':
     parser.add_argument("-n", '--num-epochs', default=101, type=int, help='number of training epochs')
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)
+    parser.add_argument("--tu-words", default=10, type=int)
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')
     parser.add_argument('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
     args = parser.parse_args()
 
-    model = main(args)
+    model, metrics = main(args)
     import ipdb; ipdb.set_trace()

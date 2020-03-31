@@ -151,12 +151,12 @@ class VAE(nn.Module):
                 x.shape[0], self.num_topics, device=x.device
             ) * self.alpha_prior
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
+            with pyro.poutine.scale(None, annealing_factor):
+                z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
             x_recon = self.decoder(z)
             # score against actual data
-            with pyro.poutine.scale(None, annealing_factor):
-                pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
+            pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
             return x_recon
 
@@ -264,7 +264,6 @@ def main(args):
         epoch_loss = 0.
         for i in range(train_batches):
             annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
-
             # if on GPU put mini-batch into CUDA memory
             x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
             if args.cuda:
@@ -284,7 +283,6 @@ def main(args):
             # get loss
             dev_loss = 0.
             for i in range(eval_batches):
-                annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()

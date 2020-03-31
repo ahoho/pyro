@@ -147,21 +147,28 @@ def main(args):
     pyro.enable_validation(__debug__)
 
     # load the data
-    data = load_sparse(args.counts_fpath)
-    data = torch.tensor(data.todense(), dtype=torch.float32)
-    args.vocab_size = data.shape[1]
-    args.max_doc_length = int(data.max())
-    if args.dev_split > 0:
+    x_train = load_sparse(args.counts_fpath)
+    x_train = torch.tensor(x_train.astype(np.float32).todense())
+    n_train = x_train.shape[0]
+
+    args.vocab_size = x_train.shape[1]
+    args.max_doc_length = int(x_train.max())
+
+    if not args.dev_counts_fpath and args.dev_split > 0:
         split_idx = np.random.choice(
             (True, False),
-            size=data.shape[0],
+            size=x_train.shape[0],
             p=(1-args.dev_split, args.dev_split),
         )
-        x_train, x_dev = data[split_idx], data[~split_idx]
+        x_train, x_dev = x_train[split_idx], x_train[~split_idx]
         n_train, n_dev = x_train.shape[0], x_dev.shape[0]
-    else:
-        n_train = data.shape[0]
-        x_train = data
+        args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
+
+    if args.dev_counts_fpath:
+        x_dev = load_sparse(args.dev_counts_fpath)
+        x_dev = torch.tensor(x_dev.astype(np.float32).todense())
+        n_dev = x_dev.shape[0]
+        args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
     # load the vocabulary
     if args.vocab_fpath is not None:
@@ -211,7 +218,7 @@ def main(args):
         print(f"{epoch}  average training loss: {epoch_loss:0.4f}")
 
         # evaluate on the dev set
-        if args.dev_split > 0 and epoch % args.eval_step == 0:
+        if (args.dev_counts_fpath or args.dev_split > 0) and epoch % args.eval_step == 0:
             eval_batches = n_dev // args.batch_size
             
             # get loss
@@ -242,6 +249,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument("-i", "--counts-fpath", default=None)
     parser.add_argument("--vocab-fpath", default=None)
+    parser.add_argument("-d", "--dev-counts-fpath", default=None)
     parser.add_argument("--dev-split", default=0.2, type=float)
     
     parser.add_argument("-k", "--num-topics", default=50, type=int)

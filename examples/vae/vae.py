@@ -25,6 +25,26 @@ def load_sparse(input_filename):
     return coo_matrix.tocsc()
 
 
+def load_json(fpath):
+    with open(fpath) as infile:
+        return json.load(infile)
+
+
+def load_embeddings(fpath, vocab):
+    """
+    Load word embeddings and align with vocabulary
+    """
+    pretrained = np.load(Path(fpath, "vectors.npy"))
+    pretrained_vocab = load_json(Path(fpath, "vocab.json"))
+    embeddings = np.random.rand(pretrained.shape[1], len(vocab)) * 0.25 - 5
+
+    for word, idx in vocab.items():
+        if word in pretrained_vocab:
+            embeddings[:, idx] = pretrained[pretrained_vocab[word], :]
+
+    return embeddings
+    
+
 # define the PyTorch module that parameterizes the
 # diagonal gaussian distribution q(z|x)
 class Encoder(nn.Module):

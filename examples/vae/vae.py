@@ -68,22 +68,25 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.beta_layer = nn.Linear(args.num_topics, args.vocab_size)
-        self.beta_bn_layer = nn.BatchNorm1d(args.vocab_size)
+        self.z_drop = nn.Dropout(args.decoder_dropout) # TODO: re-softmax?
+
+        self.eta_layer = nn.Linear(args.num_topics, args.vocab_size)
+        self.eta_bn_layer = nn.BatchNorm1d(args.vocab_size)
         
         # Do not use BN scale parameters
-        self.beta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
-        self.beta_bn_layer.weight.requires_grad = False
+        self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
+        self.eta_bn_layer.weight.requires_grad = False
 
     def forward(self, z):
-        eta = self.beta_layer(z)
-        eta_bn = self.beta_bn_layer(eta)
-        x_recon = F.softmax(eta_bn, dim=-1)#.log()
+        z_do = self.z_drop(z)
+        eta = self.eta_layer(z_do)
+        eta_bn = self.eta_bn_layer(eta)
+        x_recon = F.softmax(eta_bn, dim=-1)
         return x_recon
-
+    
     @property
-    def topics(self):
-        return self.beta_layer.weight.T.cpu().detach().numpy()
+    def beta(self):
+        return self.eta_layer.weight.T.cpu().detach().numpy()
 
 
 class CollapsedMultinomial(dist.Multinomial):

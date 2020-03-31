@@ -1,7 +1,6 @@
-# Copyright (c) 2017-2019 Uber Technologies, Inc.
-# SPDX-License-Identifier: Apache-2.0
-
 import argparse
+import json
+from pathlib import Path
 
 from tqdm import tqdm
 
@@ -33,11 +32,16 @@ class Encoder(nn.Module):
         super().__init__()
 
         # setup linear transformations
-        self.en_fc1 = nn.Linear(args.vocab_size, args.encoder_hidden_dim)
-        
-        # second layer (potentially optional)
-        self.en_fc2 = nn.Linear(args.encoder_hidden_dim, args.encoder_hidden_dim)
-        self.en_fc_drop = nn.Dropout(args.encoder_dropout)
+        self.embedding_layer = nn.Linear(args.vocab_size, args.embeddings_dim)
+
+        # map embeddings
+        if args.pretrained_embeddings is not None:
+            embeddings = torch.tensor(args.pretrained_embeddings)
+            self.embedding_layer.weight.data.copy_(embeddings)
+            self.embedding_layer.weight.requires_grad = args.update_embeddings
+
+        self.fc = nn.Linear(args.embeddings_dim, args.encoder_hidden_dim)
+        self.fc_drop = nn.Dropout(args.encoder_dropout)
 
         self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
         self.alpha_bn_layer = nn.BatchNorm1d(
@@ -49,17 +53,18 @@ class Encoder(nn.Module):
         self.alpha_bn_layer.weight.requires_grad = False
 
     def forward(self, x):
-        en1 = F.relu(self.en_fc1(x))
-        en2 = F.relu(self.en_fc2(en1))
-        en2_do = self.en_fc_drop(en2)
+        embedded = F.relu(self.embedding_layer(x))
+        hidden = F.relu(self.fc(embedded))
+        hidden_do = self.fc_drop(hidden)
 
-        alpha = self.alpha_layer(en2_do)
+        alpha = self.alpha_layer(hidden_do)
         alpha_bn = self.alpha_bn_layer(alpha)
 
         alpha_pos = torch.max(
             F.softplus(alpha_bn),
             torch.tensor(0.00001, device=alpha_bn.device)
         )
+
         return alpha_pos
 
 
@@ -127,7 +132,7 @@ class VAE(nn.Module):
             z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
             x_recon = self.decoder(z)
-            # score against actual data (TODO: is using multinomial like this ok?)
+            # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
             return x_recon
@@ -141,6 +146,26 @@ class VAE(nn.Module):
             z = self.encoder(x)
             # sample the latent code z
             pyro.sample("doc_topics", dist.Dirichlet(z))
+
+
+def load_json(fpath):
+    with open(fpath) as infile:
+        return json.load(infile)
+
+
+def load_embeddings(fpath, vocab):
+    """
+    Load word embeddings and align with vocabulary
+    """
+    pretrained = np.load(Path(fpath, "vectors.npy"))
+    pretrained_vocab = load_json(Path(fpath, "vocab.json"))
+    embeddings = np.random.rand(pretrained.shape[1], len(vocab)) * 0.25 - 5
+
+    for word, idx in vocab.items():
+        if word in pretrained_vocab:
+            embeddings[:, idx] = pretrained[pretrained_vocab[word], :]
+
+    return embeddings
 
 
 def main(args):
@@ -176,11 +201,15 @@ def main(args):
 
     # load the vocabulary
     if args.vocab_fpath is not None:
-        import json
-        with open(args.vocab_fpath) as infile:
-            vocab = json.load(infile)
-            inv_vocab = dict(zip(vocab.values(), vocab.keys()))
+        vocab = load_json(args.vocab_fpath)
 
+    # load the embeddings
+    if args.pretrained_embeddings is not None:
+        args.pretrained_embeddings = load_embeddings(args.pretrained_embeddings, vocab)
+        args.embeddings_dim = args.pretrained_embeddings.shape[0]
+    else:
+        args.embeddings_dim = args.encoder_hidden_dim
+    
     # setup the VAE
     vae = VAE(args)
 
@@ -237,12 +266,12 @@ def main(args):
             dev_loss /= n_dev
 
             # get npmi
-            beta = vae.decoder.topics
+            beta = vae.decoder.beta
             npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words)
 
             # finally, topic-uniqueness
-            topics = [word_probs.argsort()[::-1] for word_probs in beta]
-            tu = np.mean(compute_tu(topics, l=args.tu_words))
+            topic_terms = [word_probs.argsort()[::-1] for word_probs in beta]
+            tu = np.mean(compute_tu(topic_terms, l=args.tu_words))
 
             dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
@@ -257,22 +286,29 @@ if __name__ == '__main__':
     assert pyro.__version__.startswith('1.3.0')
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
+
     parser.add_argument("-i", "--counts-fpath", default=None)
     parser.add_argument("--vocab-fpath", default=None)
     parser.add_argument("-d", "--dev-counts-fpath", default=None)
     parser.add_argument("--dev-split", default=0.2, type=float)
     
     parser.add_argument("-k", "--num-topics", default=50, type=int)
-    parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
+    
     parser.add_argument("--encoder-hidden-dim", default=100, type=int)
     parser.add_argument("--encoder-dropout", default=0.2, type=float)
+    parser.add_argument("--decoder-dropout", default=0.2, type=float)
     parser.add_argument("--alpha-prior", default=0.02, type=float)
+    parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
+    parser.add_argument("--update-embeddings", action="store_true", default=False)
 
+    parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)
-    parser.add_argument("-n", '--num-epochs', default=101, type=int, help='number of training epochs')
+    parser.add_argument("-n", '--num-epochs', default=101, type=int)
+    
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)
     parser.add_argument("--tu-words", default=10, type=int)
+
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')
     parser.add_argument('--jit', action='store_true', default=False, help='whether to use PyTorch jit')

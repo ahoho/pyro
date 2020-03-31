@@ -86,6 +86,14 @@ class Decoder(nn.Module):
         return self.beta_layer.weight.T.cpu().detach().numpy()
 
 
+class CollapsedMultinomial(dist.Multinomial):
+    """
+    Equivalent to Multinomial(1, probs)
+    """
+    def log_prob(self, value):
+        return ((self.probs.log() + 1e-10) * value).sum(-1)
+
+
 # define a PyTorch module for the VAE
 class VAE(nn.Module):
     def __init__(self, args):
@@ -116,7 +124,7 @@ class VAE(nn.Module):
             # decode the latent code z
             x_recon = self.decoder(z)
             # score against actual data (TODO: is using multinomial like this ok?)
-            pyro.sample("obs", dist.Multinomial(args.max_doc_length, x_recon), obs=x)
+            pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
             return x_recon
 

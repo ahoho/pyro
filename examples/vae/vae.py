@@ -91,7 +91,8 @@ class Decoder(nn.Module):
 
 class CollapsedMultinomial(dist.Multinomial):
     """
-    Equivalent to Multinomial(1, probs)
+    Equivalent to n separate Multinomial(1, probs), where `self.log_prob` treats each
+    element of `value` as an independent one-hot draw (instead of Multinomial(n, probs))
     """
     def log_prob(self, value):
         return ((self.probs.log() + 1e-10) * value).sum(-1)

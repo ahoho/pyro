@@ -34,7 +34,10 @@ class Encoder(nn.Module):
 
         # setup linear transformations
         self.en_fc1 = nn.Linear(args.vocab_size, args.encoder_hidden_dim)
-        self.en_fc1_drop = nn.Dropout(args.encoder_dropout)
+        
+        # second layer (potentially optional)
+        self.en_fc2 = nn.Linear(args.encoder_hidden_dim, args.encoder_hidden_dim)
+        self.en_fc_drop = nn.Dropout(args.encoder_dropout)
 
         self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
         self.alpha_bn_layer = nn.BatchNorm1d(
@@ -47,9 +50,10 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         en1 = F.relu(self.en_fc1(x))
-        en1_do = self.en_fc1_drop(en1)
+        en2 = F.relu(self.en_fc2(en1))
+        en2_do = self.en_fc_drop(en2)
 
-        alpha = self.alpha_layer(en1_do)
+        alpha = self.alpha_layer(en2_do)
         alpha_bn = self.alpha_bn_layer(alpha)
 
         alpha_pos = torch.max(

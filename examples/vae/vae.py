@@ -104,13 +104,15 @@ class Decoder(nn.Module):
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
         self.eta_bn_layer.weight.requires_grad = args.learn_bn_scale
 
-    def forward(self, z, annealing_factor=1.0):
+    def forward(self, z, annealing_factor=0.0):
         z_do = self.z_drop(z)
         eta = self.eta_layer(z_do)
         eta_bn = self.eta_bn_layer(eta)
 
-        x_recon = (annealing_factor) * F.softmax(eta, dim=-1) + (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
-        # x_recon = F.softmax(eta_bn, dim=-1)
+        x_recon = (
+            (annealing_factor) * F.softmax(eta, dim=-1)
+            + (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
+        )
         return x_recon
     
     @property
@@ -152,8 +154,8 @@ class VAE(nn.Module):
             alpha_0 = torch.ones(
                 x.shape[0], self.num_topics, device=x.device
             ) * self.alpha_prior
+            
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            # with pyro.poutine.scale(None, annealing_factor):
             z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
             x_recon = self.decoder(z, annealing_factor)
@@ -163,14 +165,13 @@ class VAE(nn.Module):
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x, annealing_factor=1.0):
+    def guide(self, x, annealing_factor=0.0):
         # register PyTorch module `encoder` with Pyro
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
-            #with pyro.poutine.scale(None, annealing_factor):
             pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
@@ -178,7 +179,6 @@ def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
     """
     Calculate annealing factor. Taken from /examples/dmm.py
     """
-    # annealing
     if args.annealing_epochs > 0 and epoch < args.annealing_epochs:
         # taken from examples/dmm.py
         min_af = args.minimum_annealing_factor
@@ -189,8 +189,11 @@ def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
                 (args.annealing_epochs * batches_per_epoch)
             )
         )
+    elif args.annealing_epochs == 0:
+        annealing_factor = 0.0
     else:
         annealing_factor = 1.0
+    
 
     return annealing_factor
 

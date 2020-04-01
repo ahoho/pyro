@@ -81,3 +81,17 @@ def compute_tu(topics, l=10):
             w_counts += 1 / np.sum([w in topics_j[:l] for topics_j in topics]) # count(k, l)
         tu_results.append((1 / l) * w_counts)
     return tu_results
+
+def compute_tr(topics, l=10):
+    """
+    Compute topic redundancy score from 
+    https://pdfs.semanticscholar.org/2898/149eb423782ad2211c35eca98fdc4e08780a.pdf
+    """
+    tr_results = []
+    k = len(topics)
+    for i, topics_i in enumerate(topics):
+        w_counts = 0
+        for w in topics_i[:l]:
+            w_counts += np.sum([w in topics_j[:l] for j, topics_j in enumerate(topics) if j != i]) # count(k, l)
+        tr_results.append((1 / (k - 1)) * w_counts)
+    return tr_results

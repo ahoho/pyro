@@ -70,7 +70,7 @@ class Encoder(nn.Module):
 
         # Do not use BN scale params (seems to help)
         self.alpha_bn_layer.weight.data.copy_(torch.ones(args.num_topics))
-        self.alpha_bn_layer.weight.requires_grad = False
+        self.alpha_bn_layer.weight.requires_grad = args.learn_bn_scale
 
     def forward(self, x, annealing_factor=1.0):
         embedded = F.relu(self.embedding_layer(x))
@@ -102,7 +102,7 @@ class Decoder(nn.Module):
         
         # Do not use BN scale parameters
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
-        self.eta_bn_layer.weight.requires_grad = False
+        self.eta_bn_layer.weight.requires_grad = args.learn_bn_scale
 
     def forward(self, z, annealing_factor=1.0):
         z_do = self.z_drop(z)
@@ -326,6 +326,7 @@ if __name__ == '__main__':
     parser.add_argument("--encoder-hidden-dim", default=100, type=int)
     parser.add_argument("--encoder-dropout", default=0.2, type=float)
     parser.add_argument("--decoder-dropout", default=0.2, type=float)
+    parser.add_argument("--learn-bn-scale", default=False, action="store_true")
     parser.add_argument("--alpha-prior", default=0.02, type=float)
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
     parser.add_argument("--update-embeddings", action="store_true", default=False)

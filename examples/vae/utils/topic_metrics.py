@@ -55,8 +55,8 @@ def compute_npmi_at_n_during_training(beta, ref_counts, n=10, smoothing=0.01):
         order = np.argsort(beta[k, :])[::-1]
         indices = order[:n]
         npmi_vals = []
-        for index1 in indices:
-            for index2 in indices:
+        for i, index1 in enumerate(indices):
+            for index2 in indices[i+1:n]:
                 col1 = np.array((ref_counts[:, index1] > 0), dtype=int) + smoothing
                 col2 = np.array((ref_counts[:, index2] > 0), dtype=int) + smoothing
                 c1 = col1.sum()

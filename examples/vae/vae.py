@@ -295,7 +295,7 @@ def main(args):
 
             # get npmi
             beta = vae.decoder.beta
-            npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words)
+            npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words, smoothing=0.)
 
             # finally, topic-uniqueness
             topic_terms = [word_probs.argsort()[::-1] for word_probs in beta]

@@ -243,7 +243,7 @@ def main(args):
     # setup the optimizer
     adam_args = {
         "lr": args.learning_rate,
-        "betas": (0.99, 0.999), # from ProdLDA
+        "betas": (0.9, 0.999), # from ProdLDA
     }
     optimizer = Adam(adam_args)
 

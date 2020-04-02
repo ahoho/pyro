@@ -15,7 +15,7 @@ import pyro.distributions as dist
 from pyro.infer import SVI, JitTrace_ELBO, Trace_ELBO
 from pyro.optim import Adam
 
-from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tu
+from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tr
 
 def load_sparse(input_filename):
     npy = np.load(input_filename)
@@ -255,7 +255,7 @@ def main(args):
     dev_metrics = {
         "loss": np.inf,
         "npmi": 0,
-        "tu": 0,
+        "tr": np.inf,
     }
 
     # training loop
@@ -300,13 +300,13 @@ def main(args):
 
             # finally, topic-uniqueness
             topic_terms = [word_probs.argsort()[::-1] for word_probs in beta]
-            tu = np.mean(compute_tu(topic_terms, l=args.tu_words))
+            tr = np.mean(compute_tr(topic_terms, args.tr_words))
 
             dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
-            dev_metrics['tu'] = max(tu, dev_metrics['tu'])
+            dev_metrics['tr'] = min(tr, dev_metrics['tr'])
 
-            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}")
+            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tr: {tr:0.4f}")
     
     import ipdb; ipdb.set_trace()
     return vae, dev_metrics
@@ -339,7 +339,7 @@ if __name__ == '__main__':
     
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)
-    parser.add_argument("--tu-words", default=10, type=int)
+    parser.add_argument("--tr-words", default=10, type=int)
 
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')

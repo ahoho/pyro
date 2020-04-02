@@ -54,35 +54,35 @@ class Encoder(nn.Module):
         # setup linear transformations
         self.embedding_layer = nn.Linear(args.vocab_size, args.embeddings_dim)
 
-        # map embeddings
+        # map embeddings to pretrained
         if args.pretrained_embeddings is not None:
             embeddings = torch.tensor(args.pretrained_embeddings)
             self.embedding_layer.weight.data.copy_(embeddings)
-            self.embedding_layer.weight.requires_grad = args.update_embeddings
+            self.embedding_layer.weight.requires_grad = args.update_pretrained_embeddings
+        
+        # TODO: allow creation of additional hidden layers
 
-        self.fc = nn.Linear(args.embeddings_dim, args.encoder_hidden_dim)
-        self.fc_drop = nn.Dropout(args.encoder_dropout)
+        self.hidden_drop = nn.Dropout(args.encoder_dropout)
 
-        self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
+        self.alpha_layer = nn.Linear(args.embeddings_dim, args.num_topics)
         self.alpha_bn_layer = nn.BatchNorm1d(
             args.num_topics, eps=0.001, momentum=0.001, affine=True
         )
 
-        # Do not use BN scale params (seems to help)
+        # Do not use BN scale params (we are porting from TF)
         self.alpha_bn_layer.weight.data.copy_(torch.ones(args.num_topics))
-        self.alpha_bn_layer.weight.requires_grad = args.learn_bn_scale
+        self.alpha_bn_layer.weight.requires_grad = False
 
-    def forward(self, x, annealing_factor=1.0):
+    def forward(self, x):
         embedded = F.relu(self.embedding_layer(x))
-        hidden = F.relu(self.fc(embedded))
-        hidden_do = self.fc_drop(hidden)
+        embedded_do = self.hidden_drop(embedded)
 
-        alpha = self.alpha_layer(hidden_do)
+        alpha = self.alpha_layer(embedded_do)
         alpha_bn = self.alpha_bn_layer(alpha)
 
         alpha_pos = torch.max(
             F.softplus(alpha_bn),
-            torch.tensor(0.00001, device=alpha_bn.device)
+            torch.tensor(0.001, device=alpha_bn.device)
         )
 
         return alpha_pos
@@ -93,26 +93,22 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, args):
         super().__init__()
-        self.z_drop = nn.Dropout(args.decoder_dropout) # TODO: re-softmax?
-
-        self.eta_layer = nn.Linear(args.num_topics, args.vocab_size)
+        self.z_drop = nn.Dropout(args.decoder_dropout)
+        self.eta_layer = nn.Linear(args.num_topics, args.vocab_size, bias=False)
         self.eta_bn_layer = nn.BatchNorm1d(
             args.vocab_size, eps=0.001, momentum=0.001, affine=True
         )
-        
+
         # Do not use BN scale parameters
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
-        self.eta_bn_layer.weight.requires_grad = args.learn_bn_scale
+        self.eta_bn_layer.weight.requires_grad = False
 
-    def forward(self, z, annealing_factor=0.0):
+    def forward(self, z):
         z_do = self.z_drop(z)
         eta = self.eta_layer(z_do)
         eta_bn = self.eta_bn_layer(eta)
 
-        x_recon = (
-            (annealing_factor) * F.softmax(eta, dim=-1)
-            + (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
-        )
+        x_recon = F.softmax(eta_bn, dim=-1)
         return x_recon
     
     @property
@@ -124,6 +120,8 @@ class CollapsedMultinomial(dist.Multinomial):
     """
     Equivalent to n separate Multinomial(1, probs), where `self.log_prob` treats each
     element of `value` as an independent one-hot draw (instead of Multinomial(n, probs))
+
+    This aligns with the loss in the various neural topic modeling papers
     """
     def log_prob(self, value):
         return ((self.probs.log() + 1e-10) * value).sum(-1)
@@ -156,23 +154,25 @@ class VAE(nn.Module):
             ) * self.alpha_prior
             
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
+            with pyro.poutine.scale(None, annealing_factor):
+                z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
-            x_recon = self.decoder(z, annealing_factor)
+            x_recon = self.decoder(z)
             # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x, annealing_factor=0.0):
+    def guide(self, x, annealing_factor=1.0):
         # register PyTorch module `encoder` with Pyro
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
-            pyro.sample("doc_topics", dist.Dirichlet(z))
+            with pyro.poutine.scale(None, annealing_factor):
+                pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
 def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
@@ -189,8 +189,6 @@ def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
                 (args.annealing_epochs * batches_per_epoch)
             )
         )
-    elif args.annealing_epochs == 0:
-        annealing_factor = 0.0
     else:
         annealing_factor = 1.0
     
@@ -322,23 +320,22 @@ if __name__ == '__main__':
     parser.add_argument("-i", "--counts-fpath", default=None)
     parser.add_argument("--vocab-fpath", default=None)
     parser.add_argument("-d", "--dev-counts-fpath", default=None)
-    parser.add_argument("--dev-split", default=0.2, type=float)
+    parser.add_argument("--dev-split", default=0.1, type=float)
     
     parser.add_argument("-k", "--num-topics", default=50, type=int)
     
     parser.add_argument("--encoder-hidden-dim", default=100, type=int)
-    parser.add_argument("--encoder-dropout", default=0.2, type=float)
-    parser.add_argument("--decoder-dropout", default=0.2, type=float)
-    parser.add_argument("--learn-bn-scale", default=False, action="store_true")
-    parser.add_argument("--alpha-prior", default=0.02, type=float)
+    parser.add_argument("--encoder-dropout", default=0.6, type=float)
+    parser.add_argument("--decoder-dropout", default=0.0, type=float)
+    parser.add_argument("--alpha-prior", default=0.01, type=float)
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
-    parser.add_argument("--update-embeddings", action="store_true", default=False)
+    parser.add_argument("--update-pretrained-embeddings", action="store_true", default=False)
 
     parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)
-    parser.add_argument("-n", '--num-epochs', default=101, type=int)
-    parser.add_argument("--annealing-epochs", default=50, type=int)
-    parser.add_argument("--minimum-annealing-factor", default=0.01, type=float)
+    parser.add_argument("-n", '--num-epochs', default=300, type=int)
+    parser.add_argument("--annealing-epochs", default=100, type=int)
+    parser.add_argument("--minimum-annealing-factor", default=0.0, type=float)
     
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)

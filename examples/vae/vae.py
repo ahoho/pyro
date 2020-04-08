@@ -103,12 +103,15 @@ class Decoder(nn.Module):
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
         self.eta_bn_layer.weight.requires_grad = False
 
-    def forward(self, z):
+    def forward(self, z, annealing_factor=1.0):
         z_do = self.z_drop(z)
         eta = self.eta_layer(z_do)
         eta_bn = self.eta_bn_layer(eta)
 
-        x_recon = F.softmax(eta_bn, dim=-1)
+        x_recon = (
+            (annealing_factor) * F.softmax(eta, dim=-1) +
+            (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
+        )
         return x_recon
     
     @property
@@ -154,10 +157,10 @@ class VAE(nn.Module):
             ) * self.alpha_prior
             
             # sample from prior (value will be sampled by guide when computing the ELBO)
-            with pyro.poutine.scale(None, annealing_factor):
-                z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
+            # with pyro.poutine.scale(None, annealing_factor):
+            z = pyro.sample("doc_topics", dist.Dirichlet(alpha_0))
             # decode the latent code z
-            x_recon = self.decoder(z)
+            x_recon = self.decoder(z, annealing_factor=annealing_factor)
             # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
@@ -171,8 +174,8 @@ class VAE(nn.Module):
             # use the encoder to get the parameters used to define q(z|x)
             z = self.encoder(x)
             # sample the latent code z
-            with pyro.poutine.scale(None, annealing_factor):
-                pyro.sample("doc_topics", dist.Dirichlet(z))
+            #with pyro.poutine.scale(None, annealing_factor):
+            pyro.sample("doc_topics", dist.Dirichlet(z))
 
 
 def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
@@ -306,7 +309,6 @@ def main(args):
             dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
             dev_metrics['tr'] = min(tr, dev_metrics['tr'])
-
             print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tr: {tr:0.4f}")
     
     import ipdb; ipdb.set_trace()

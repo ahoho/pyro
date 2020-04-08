@@ -229,6 +229,7 @@ def main(args):
     # load the vocabulary
     if args.vocab_fpath is not None:
         vocab = load_json(args.vocab_fpath)
+        vocab = {k: v for k, v in sorted(vocab.items(), key=lambda kv: kv[1])}
 
     # load the embeddings
     if args.pretrained_embeddings is not None:

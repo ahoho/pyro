@@ -5,17 +5,19 @@ from pathlib import Path
 from tqdm import tqdm
 
 import numpy as np
+import pandas as pd
 from scipy import sparse
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import Adam
 
 import pyro
 import pyro.distributions as dist
-from pyro.infer import SVI, JitTrace_ELBO, Trace_ELBO
-from pyro.optim import Adam
+from pyro.infer import JitTrace_ELBO, Trace_ELBO
 
-from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tr
+from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tu
 
 def load_sparse(input_filename):
     npy = np.load(input_filename)
@@ -29,6 +31,9 @@ def load_json(fpath):
     with open(fpath) as infile:
         return json.load(infile)
 
+def save_json(obj, fpath):
+    with open(fpath, "w") as outfile:
+        return json.dump(obj, outfile)
 
 def load_embeddings(fpath, vocab):
     """
@@ -113,6 +118,17 @@ class Decoder(nn.Module):
             (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
         )
         return x_recon
+
+    def masked_beta_sim(self, args):
+        """
+        Compute pairwise topic similarities, with the goal of minimizing it.
+        """
+        # must normalize else optimization is unbounded
+        # beta_sim = F.normalize(self.eta_layer.weight, p=2, dim=0)
+        beta_sim = F.softmax(self.eta_layer.weight, dim=0)
+        topic_cov_masked = torch.tril((beta_sim.T @ beta_sim), diagonal=-1)
+        topic_cov_norm = torch.norm(topic_cov_masked, p=args.beta_sim_power)
+        return topic_cov_norm * args.beta_sim_weight
     
     @property
     def beta(self):
@@ -249,18 +265,20 @@ def main(args):
         "lr": args.learning_rate,
         "betas": (0.9, 0.999), # from ProdLDA
     }
-    optimizer = Adam(adam_args)
+    optimizer = Adam(vae.parameters(), **adam_args) #dev loss: 671.8198, npmi: 0.1316, tr: 0.0103
 
     # setup the inference algorithm
     elbo = JitTrace_ELBO() if args.jit else Trace_ELBO()
-    svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
+    loss_fn = elbo.differentiable_loss
 
     train_elbo = []
+    results = []
     dev_metrics = {
         "loss": np.inf,
         "npmi": 0,
-        "tr": np.inf,
+        "tu": np.inf,
     }
+    from scipy.spatial.distance import pdist
 
     # training loop
     for epoch in range(args.num_epochs):
@@ -277,12 +295,20 @@ def main(args):
                 x_batch = x_batch.cuda()
             # do ELBO gradient and accumulate loss
             annealing_factor = torch.tensor(annealing_factor, device=x_batch.device)
-            epoch_loss += svi.step(x_batch, annealing_factor)
+            loss = (
+                loss_fn(vae.model, vae.guide, x_batch, annealing_factor)
+                + vae.decoder.masked_beta_sim(args)
+            )
+            loss.backward()
+            epoch_loss += loss.item()
+
+            optimizer.step()
+            optimizer.zero_grad()
 
         # report training diagnostics
         epoch_loss /= n_train
         train_elbo.append(epoch_loss)
-        print(f"{epoch}  average training loss: {epoch_loss:0.4f}")
+        # print(f"{epoch}  average training loss: {epoch_loss:0.4f}")
 
         # evaluate on the dev set
         if (args.dev_counts_fpath or args.dev_split > 0) and epoch % args.eval_step == 0:
@@ -294,8 +320,10 @@ def main(args):
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()
-                dev_loss += svi.evaluate_loss(x_batch, annealing_factor)
-
+                dev_loss += (
+                    loss_fn(vae.model, vae.guide, x_batch, annealing_factor)
+                    + vae.decoder.masked_beta_sim(args)
+                ).item()
             dev_loss /= n_dev
 
             # get npmi
@@ -304,13 +332,37 @@ def main(args):
 
             # finally, topic-uniqueness
             topic_terms = [word_probs.argsort()[::-1] for word_probs in beta]
-            tr = np.mean(compute_tr(topic_terms, args.tr_words))
+            tu = np.mean(compute_tu(topic_terms, args.tu_words))
 
             dev_metrics['loss'] = min(dev_loss, dev_metrics['loss'])
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
-            dev_metrics['tr'] = min(tr, dev_metrics['tr'])
-            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tr: {tr:0.4f}")
-    
+            dev_metrics['tu'] = min(tu, dev_metrics['tu'])
+
+            beta_dists = pdist(F.softmax(torch.tensor(beta), dim=-1).detach()).sum()
+            result = (
+                f"{epoch}: tr loss: {epoch_loss:0.4f}, beta_dists: {beta_dists:0.4f}, beta sim: {vae.decoder.masked_beta_sim(args).item():0.4f} "
+                f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}"
+            )
+            print(result)
+            results.append((epoch, epoch_loss, dev_loss, npmi, tu, beta_dists))
+
+    if args.save_all:
+        import shutil
+        from datetime import datetime
+
+        import pandas as pd
+        
+        now = datetime.now().strftime("%Y-%m-%d_%H%M")
+        outpath = Path(f"results/{now}")
+        outpath.mkdir()
+
+        shutil.copy("vae.py", Path(outpath, "vae.py"))
+        save_json(args.__dict__, Path(outpath, "args.json"))
+        results_df = pd.DataFrame(
+            results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu", "beta_dists"]
+        )
+        results_df.to_csv(Path(outpath, "results.csv"))
+
     import ipdb; ipdb.set_trace()
     return vae, dev_metrics
 
@@ -324,6 +376,7 @@ if __name__ == '__main__':
     parser.add_argument("--vocab-fpath", default=None)
     parser.add_argument("-d", "--dev-counts-fpath", default=None)
     parser.add_argument("--dev-split", default=0.1, type=float)
+    parser.add_argument("--save-all", action="store_true", default=False)
     
     parser.add_argument("-k", "--num-topics", default=50, type=int)
     
@@ -334,6 +387,9 @@ if __name__ == '__main__':
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
     parser.add_argument("--update-pretrained-embeddings", action="store_true", default=False)
 
+    parser.add_argument("--beta-sim-weight", default=0., type=float)
+    parser.add_argument("--beta-sim-power", default=1, type=float, choices=[1, 2])
+
     parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)
     parser.add_argument("-n", '--num-epochs', default=300, type=int)
@@ -342,7 +398,7 @@ if __name__ == '__main__':
     
     parser.add_argument("--eval-step", default=1, type=int)
     parser.add_argument("--npmi-words", default=10, type=int)
-    parser.add_argument("--tr-words", default=10, type=int)
+    parser.add_argument("--tu-words", default=10, type=int)
 
     parser.add_argument("--seed", default=42, type=int)
     parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')

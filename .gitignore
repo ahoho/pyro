@@ -11,6 +11,7 @@ examples/dmm/*.pkl
 examples/*.csv
 examples/*.pdf
 examples/mixed_hmm/*csv
+examples/vae/results
 pyro/contrib/examples/processed
 pyro/contrib/examples/results
 pyro/contrib/examples/raw

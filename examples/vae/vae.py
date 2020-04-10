@@ -6,6 +6,9 @@ from tqdm import tqdm
 
 import numpy as np
 from scipy import sparse
+
+from sklearn.feature_extraction.text import TfidfTransformer
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -145,8 +148,11 @@ class VAE(nn.Module):
         self.num_topics = args.num_topics
         self.alpha_prior = args.alpha_prior
 
+        self.encode_doc_reps = args.encode_doc_reps
+        self.similarity_weight = args.similarity_weight
+
     # define the model p(x|z)p(z)
-    def model(self, x, annealing_factor=1.0):
+    def model(self, x, doc_reps, annealing_factor=1.0):
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
         with pyro.plate("data", x.shape[0]):
@@ -162,15 +168,26 @@ class VAE(nn.Module):
             # score against actual data
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
+            if self.similarity_weight > 0:
+                
+                eye_mask = 1 - torch.eye(x.shape[0], device=x.device)
+                x_sim = eye_mask * (x_recon @ x_recon.T) # [bs x V] [V x bs] -> [bs x bs]
+                doc_sim = eye_mask * (doc_reps @ doc_reps.T)
+                with pyro.poutine.scale(None, self.similarity_weight):
+                    # TODO: revisit this sampling
+                    # TODO: more emphasis on dissimilarity than similarity
+                    pyro.sample("similarity", dist.Normal(x_sim, scale=0.1).to_event(1), obs=doc_sim)
+
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x, annealing_factor=0.0):
+    def guide(self, x, doc_reps, annealing_factor=0.0):
         # register PyTorch module `encoder` with Pyro
+        input = doc_reps if self.encode_doc_reps else x
         pyro.module("encoder", self.encoder)
-        with pyro.plate("data", x.shape[0]):
+        with pyro.plate("data", input.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
-            z = self.encoder(x)
+            z = self.encoder(input)
             # sample the latent code z
             pyro.sample("doc_topics", dist.Dirichlet(z))
 
@@ -228,6 +245,15 @@ def main(args):
         n_dev = x_dev.shape[0]
         args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
+    if args.encode_doc_reps or args.similarity_weight > 0:
+        tfidf = TfidfTransformer()
+        tfidf.fit(x_train)
+
+        doc_reps_train = torch.tensor(tfidf.transform(x_train).todense(), dtype=torch.float)
+        doc_reps_dev = torch.tensor(tfidf.transform(x_dev).todense(), dtype=torch.float)
+    else:
+        doc_reps_train, doc_reps_dev = torch.tensor([]), torch.tensor([])
+
     # load the vocabulary
     if args.vocab_fpath is not None:
         vocab = load_json(args.vocab_fpath)
@@ -271,16 +297,18 @@ def main(args):
             annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
             # if on GPU put mini-batch into CUDA memory
             x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
+            doc_reps_batch = doc_reps_train[i * args.batch_size:(i + 1) * args.batch_size]
+
             if args.cuda:
                 x_batch = x_batch.cuda()
+                doc_reps_batch = doc_reps_batch.cuda()
             # do ELBO gradient and accumulate loss
             annealing_factor = torch.tensor(annealing_factor, device=x_batch.device)
-            epoch_loss += svi.step(x_batch, annealing_factor)
+            epoch_loss += svi.step(x_batch, doc_reps_batch, annealing_factor)
 
         # report training diagnostics
         epoch_loss /= n_train
         train_elbo.append(epoch_loss)
-        print(f"{epoch}  average training loss: {epoch_loss:0.4f}")
 
         # evaluate on the dev set
         if (args.dev_counts_fpath or args.dev_split > 0) and epoch % args.eval_step == 0:
@@ -290,9 +318,11 @@ def main(args):
             dev_loss = 0.
             for i in range(eval_batches):
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
+                doc_reps_batch = doc_reps_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()
-                dev_loss += svi.evaluate_loss(x_batch, annealing_factor)
+                    doc_reps_batch = doc_reps_batch.cuda()
+                dev_loss += svi.evaluate_loss(x_batch, doc_reps_batch, annealing_factor)
 
             dev_loss /= n_dev
 
@@ -308,7 +338,10 @@ def main(args):
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
             dev_metrics['tu'] = max(tu, dev_metrics['tu'])
 
-            print(f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}")
+            print(
+                f"{epoch}  train loss: {epoch_loss:0.4f}, "
+                f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}"
+            )
     
     import ipdb; ipdb.set_trace()
     return vae, dev_metrics
@@ -333,6 +366,9 @@ if __name__ == '__main__':
     parser.add_argument("--alpha-prior", default=0.02, type=float)
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
     parser.add_argument("--update-embeddings", action="store_true", default=False)
+    
+    parser.add_argument("--encode-doc-reps", action="store_true", default=False)
+    parser.add_argument("--similarity-weight", default=0.0, type=float)
 
     parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)

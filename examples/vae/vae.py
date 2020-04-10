@@ -5,7 +5,6 @@ from pathlib import Path
 from tqdm import tqdm
 
 import numpy as np
-import pandas as pd
 from scipy import sparse
 
 import torch
@@ -265,7 +264,7 @@ def main(args):
         "lr": args.learning_rate,
         "betas": (0.9, 0.999), # from ProdLDA
     }
-    optimizer = Adam(vae.parameters(), **adam_args) #dev loss: 671.8198, npmi: 0.1316, tr: 0.0103
+    optimizer = Adam(vae.parameters(), **adam_args)
 
     # setup the inference algorithm
     elbo = JitTrace_ELBO() if args.jit else Trace_ELBO()

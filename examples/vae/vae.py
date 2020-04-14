@@ -154,7 +154,8 @@ class VAE(nn.Module):
         self.alpha_prior = args.alpha_prior
 
         self.encode_doc_reps = args.encode_doc_reps
-        self.similarity_weight = args.similarity_weight
+        self.doc_similarity_weight = args.doc_similarity_weight
+        self.distillation_weight = args.distillation_weight
 
     # define the model p(x|z)p(z)
     def model(self, x, doc_reps, annealing_factor=1.0):
@@ -171,9 +172,15 @@ class VAE(nn.Module):
             # decode the latent code z
             x_recon = self.decoder(z, annealing_factor)
             # score against actual data
+            if self.distillation_weight > 0:
+                alpha = self.distillation_weight
+                doc_reps = doc_reps * (doc_reps > 1e-5).float()
+                pseudo_x = doc_reps * x.sum(1, keepdims=True)
+                x = (1 - alpha) * x + alpha * pseudo_x
+
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
             
-            if self.similarity_weight > 0:
+            if self.doc_similarity_weight > 0:
                 
                 eye_mask = 1 - torch.eye(x.shape[0], device=x.device)
                 x_sim = eye_mask * (x_recon @ x_recon.T) # [bs x V] [V x bs] -> [bs x bs]
@@ -254,12 +261,26 @@ def main(args):
         n_dev = x_dev.shape[0]
         args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
-    if args.encode_doc_reps or args.similarity_weight > 0:
-        tfidf = TfidfTransformer()
-        tfidf.fit(x_train)
+    if args.encode_doc_reps or args.doc_similarity_weight > 0 or args.distillation_weight > 0:
+        if args.doc_reps_source == "tf-idf":
+            tfidf = TfidfTransformer()
+            tfidf.fit(x_train)
 
-        doc_reps_train = torch.tensor(tfidf.transform(x_train).todense(), dtype=torch.float)
-        doc_reps_dev = torch.tensor(tfidf.transform(x_dev).todense(), dtype=torch.float)
+            doc_reps_train = torch.tensor(
+                tfidf.transform(x_train).todense(), dtype=torch.float
+            )
+            doc_reps_dev = torch.tensor(
+                tfidf.transform(x_dev).todense(), dtype=torch.float
+            )
+        else:
+            doc_reps_train = torch.tensor(
+                np.load(Path(args.doc_reps_source, "train.npy"))
+            )
+            doc_reps_dev = torch.tensor(
+                np.load(Path(args.doc_reps_source, "dev.npy"))
+            )
+            assert(doc_reps_train.shape[0] == x_train.shape[0])
+            assert(doc_reps_dev.shape[0] == x_dev.shape[0])
     else:
         doc_reps_train, doc_reps_dev = torch.tensor([]), torch.tensor([])
 
@@ -400,8 +421,10 @@ if __name__ == '__main__':
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
     parser.add_argument("--update-embeddings", action="store_true", default=False)
     
-    parser.add_argument("--encode-doc-reps", action="store_true", default=False)
-    parser.add_argument("--similarity-weight", default=0.0, type=float)
+    parser.add_argument("--encode-doc-reps", action="store_true", default=None)
+    parser.add_argument("--doc-similarity-weight", default=0.0, type=float)
+    parser.add_argument("--distillation-weight", default=0.0, type=float)
+    parser.add_argument("--doc-reps-source", default="tf-idf")
 
     parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
     parser.add_argument("-b", "--batch-size", default=200, type=int)

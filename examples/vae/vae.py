@@ -33,6 +33,11 @@ def load_json(fpath):
         return json.load(infile)
 
 
+def save_json(obj, fpath):
+    with open(fpath, "w") as outfile:
+        return json.dump(obj, outfile)
+
+
 def load_embeddings(fpath, vocab):
     """
     Load word embeddings and align with vocabulary

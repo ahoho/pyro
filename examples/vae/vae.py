@@ -221,6 +221,10 @@ def main(args):
     pyro.set_rng_seed(args.seed)
     pyro.enable_validation(__debug__)
 
+    if args.save_all:
+        with open(__file__, "r") as infile:
+            this_file = infile.read()
+
     # load the data
     x_train = load_sparse(args.counts_fpath)
     x_train = torch.tensor(x_train.astype(np.float32).todense())
@@ -280,6 +284,7 @@ def main(args):
     svi = SVI(vae.model, vae.guide, optimizer, loss=elbo)
 
     train_elbo = []
+    results = []
     dev_metrics = {
         "loss": np.inf,
         "npmi": 0,
@@ -340,10 +345,30 @@ def main(args):
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
             dev_metrics['tu'] = max(tu, dev_metrics['tu'])
 
-            print(
-                f"{epoch}  train loss: {epoch_loss:0.4f}, "
+            result = (
+                f"{epoch}: tr loss: {epoch_loss:0.4f}, "
                 f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}"
             )
+            print(result)
+            results.append((epoch, epoch_loss, dev_loss, npmi, tu))
+
+    if args.save_all:
+        from datetime import datetime
+
+        import pandas as pd
+        
+        now = datetime.now().strftime("%Y-%m-%d_%H%M")
+        outpath = Path(f"results/{now}")
+        outpath.mkdir()
+
+        with open(Path(outpath, "vae.py"), "w") as outfile:
+            outfile.write(this_file)
+        
+        save_json(args.__dict__, Path(outpath, "args.json"))
+        results_df = pd.DataFrame(
+            results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
+        )
+        results_df.to_csv(Path(outpath, "results.csv"))
     
     import ipdb; ipdb.set_trace()
     return vae, dev_metrics
@@ -358,6 +383,7 @@ if __name__ == '__main__':
     parser.add_argument("--vocab-fpath", default=None)
     parser.add_argument("-d", "--dev-counts-fpath", default=None)
     parser.add_argument("--dev-split", default=0.2, type=float)
+    parser.add_argument("--save-all", action="store_true", default=False)
     
     parser.add_argument("-k", "--num-topics", default=50, type=int)
     

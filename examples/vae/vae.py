@@ -289,7 +289,9 @@ def main(args):
     # training loop
     for epoch in range(args.num_epochs):
         # initialize loss accumulator
-        x_train = x_train[np.random.choice(n_train, size=n_train, replace=False)] #shuffle
+        random_idx = np.random.choice(n_train, size=n_train, replace=False)
+        x_train = x_train[random_idx] #shuffle
+        doc_reps_train = doc_reps_train[random_idx]
         train_batches = n_train // args.batch_size
 
         epoch_loss = 0.

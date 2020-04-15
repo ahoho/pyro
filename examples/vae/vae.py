@@ -333,7 +333,7 @@ def main(args):
         # initialize loss accumulator
         random_idx = np.random.choice(n_train, size=n_train, replace=False)
         x_train = x_train[random_idx] #shuffle
-        doc_reps_train = doc_reps_train[random_idx]
+        doc_reps_train = doc_reps_train[random_idx] if len(doc_reps_train) > 0 else doc_reps_train
         train_batches = n_train // args.batch_size
 
         epoch_loss = 0.

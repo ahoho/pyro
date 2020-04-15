@@ -60,7 +60,8 @@ class Encoder(nn.Module):
         super().__init__()
 
         # setup linear transformations
-        self.embedding_layer = nn.Linear(args.vocab_size, args.embeddings_dim)
+        encoder_input_dim = args.vocab_size * 2 if args.encode_doc_reps else args.vocab_size
+        self.embedding_layer = nn.Linear(encoder_input_dim, args.embeddings_dim)
 
         # map embeddings
         if args.pretrained_embeddings is not None:
@@ -195,7 +196,7 @@ class VAE(nn.Module):
     # define the guide (i.e. variational distribution) q(z|x)
     def guide(self, x, doc_reps, annealing_factor=0.0):
         # register PyTorch module `encoder` with Pyro
-        input = doc_reps if self.encode_doc_reps else x
+        input = torch.cat([x, doc_reps], dim=1) if self.encode_doc_reps else x
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", input.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)

@@ -72,6 +72,11 @@ class Encoder(nn.Module):
         self.fc = nn.Linear(args.embeddings_dim, args.encoder_hidden_dim)
         self.fc_drop = nn.Dropout(args.encoder_dropout)
 
+        if args.second_hidden_layer:
+            self.second_hidden_layer = True
+            self.fc2 = nn.Linear(args.encoder_hidden_dim, args.encoder_hidden_dim)
+            self.fc2_drop = nn.Dropout(args.encoder_dropout)
+        
         self.alpha_layer = nn.Linear(args.encoder_hidden_dim, args.num_topics)
         self.alpha_bn_layer = nn.BatchNorm1d(
             args.num_topics, eps=0.001, momentum=0.001, affine=True
@@ -83,8 +88,13 @@ class Encoder(nn.Module):
 
     def forward(self, x, annealing_factor=1.0):
         embedded = F.relu(self.embedding_layer(x))
+
         hidden = F.relu(self.fc(embedded))
         hidden_do = self.fc_drop(hidden)
+
+        if args.second_hidden_layer:
+            hidden = F.relu(self.fc2(hidden)) # don't dropout the first layer
+            hidden_do = self.fc2_drop(hidden)
 
         alpha = self.alpha_layer(hidden_do)
         alpha_bn = self.alpha_bn_layer(alpha)
@@ -421,6 +431,7 @@ if __name__ == '__main__':
     parser.add_argument("--alpha-prior", default=0.02, type=float)
     parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
     parser.add_argument("--update-embeddings", action="store_true", default=False)
+    parser.add_argument("--second-hidden-layer", action="store_true", default=False)
     
     parser.add_argument("--encode-doc-reps", action="store_true", default=None)
     parser.add_argument("--doc-similarity-weight", default=0.0, type=float)

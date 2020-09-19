@@ -14,8 +14,12 @@ docs: FORCE
 apidoc: FORCE
 	$(MAKE) -C docs apidoc
 
+tutorial: FORCE
+	$(MAKE) -C tutorial html
+
 lint: FORCE
 	flake8
+	python scripts/update_headers.py --check
 
 license: FORCE
 	python scripts/update_headers.py
@@ -69,6 +73,9 @@ test-jit: FORCE
 	pytest -v -n auto --tb=short --runxfail tests/infer/test_jit.py tests/test_examples.py::test_jit | tee jit.log
 	pytest -v -n auto --tb=short --runxfail tests/infer/mcmc/test_hmc.py tests/infer/mcmc/test_nuts.py \
 		-k JIT=True | tee -a jit.log
+
+test-funsor: lint FORCE
+	pytest -vx -n auto --stage funsor
 
 clean: FORCE
 	git clean -dfx -e pyro_ppl.egg-info

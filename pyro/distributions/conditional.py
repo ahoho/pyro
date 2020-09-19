@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 import torch
 import torch.nn
 
+from .torch import TransformedDistribution
+
 
 class ConditionalDistribution(ABC):
     @abstractmethod
@@ -52,6 +54,9 @@ class ConstantConditionalTransform(ConditionalTransform):
     def condition(self, context):
         return self.transform
 
+    def clear_cache(self):
+        self.transform.clear_cache()
+
 
 class ConditionalTransformedDistribution(ConditionalDistribution):
     def __init__(self, base_dist, transforms):
@@ -63,4 +68,7 @@ class ConditionalTransformedDistribution(ConditionalDistribution):
     def condition(self, context):
         base_dist = self.base_dist.condition(context)
         transforms = [t.condition(context) for t in self.transforms]
-        return torch.distributions.TransformedDistribution(base_dist, transforms)
+        return TransformedDistribution(base_dist, transforms)
+
+    def clear_cache(self):
+        pass

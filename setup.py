@@ -47,7 +47,7 @@ with open(os.path.join(PROJECT_PATH, 'pyro', '_version.py'), 'w') as f:
 try:
     long_description = open('README.md', encoding='utf-8').read()
 except Exception as e:
-    sys.stderr.write('Failed to read README.md\n'.format(e))
+    sys.stderr.write('Failed to read README.md: {}\n'.format(e))
     sys.stderr.flush()
     long_description = ''
 
@@ -60,9 +60,11 @@ EXTRAS_REQUIRE = [
     'jupyter>=1.0.0',
     'graphviz>=0.8',
     'matplotlib>=1.3',
-    'torchvision>=0.5.0',
+    'torchvision>=0.6.0',
     'visdom>=0.1.4',
+    # 'biopython>=1.54',  # requires Python 3.6
     'pandas',
+    'scikit-learn',
     'seaborn',
     'wget',
 ]
@@ -85,14 +87,14 @@ setup(
         'numpy>=1.7',
         'opt_einsum>=2.3.2',
         'pyro-api>=0.1.1',
-        'torch>=1.4.0',
+        'torch>=1.5.0',
         'tqdm>=4.36',
     ],
     extras_require={
         'extras': EXTRAS_REQUIRE,
         'test': EXTRAS_REQUIRE + [
             'nbval',
-            'pytest>=4.1',
+            'pytest>=5.0',
             'pytest-cov',
             'scipy>=1.1',
         ],
@@ -106,12 +108,17 @@ setup(
             'nbval',
             'ninja',
             'pypandoc',
-            'pytest>=4.1',
+            'pytest>=5.0',
             'pytest-xdist',
             'scipy>=1.1',
             'sphinx',
             'sphinx_rtd_theme',
             'yapf',
+        ],
+        'horovod': ['horovod[pytorch]>=0.19'],
+        'funsor': [
+            # TODO update to release branch (currently using a recent commit on master)
+            'funsor[torch] @ git+git://github.com/pyro-ppl/funsor.git@e3eba15e2ad7d9db5dd5622c247e0aaa7e81e7dd',
         ],
     },
     python_requires='>=3.5',

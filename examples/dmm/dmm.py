@@ -406,9 +406,9 @@ def main(args):
 
         # compute the validation and test loss n_samples many times
         val_nll = svi.evaluate_loss(val_batch, val_batch_reversed, val_batch_mask,
-                                    val_seq_lengths) / torch.sum(val_seq_lengths)
+                                    val_seq_lengths) / float(torch.sum(val_seq_lengths))
         test_nll = svi.evaluate_loss(test_batch, test_batch_reversed, test_batch_mask,
-                                     test_seq_lengths) / torch.sum(test_seq_lengths)
+                                     test_seq_lengths) / float(torch.sum(test_seq_lengths))
 
         # put the RNN back into training mode (i.e. turn on drop-out if applicable)
         dmm.rnn.train()
@@ -450,7 +450,7 @@ def main(args):
 
 # parse command-line arguments and execute the main method
 if __name__ == '__main__':
-    assert pyro.__version__.startswith('1.3.0')
+    assert pyro.__version__.startswith('1.4.0')
 
     parser = argparse.ArgumentParser(description="parse args")
     parser.add_argument('-n', '--num-epochs', type=int, default=5000)

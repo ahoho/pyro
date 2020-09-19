@@ -64,6 +64,20 @@ BetaBinomial
     :undoc-members:
     :show-inheritance:
 
+CoalescentTimes
+---------------
+.. autoclass:: pyro.distributions.CoalescentTimes
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+CoalescentTimesWithRate
+-----------------------
+.. autoclass:: pyro.distributions.CoalescentTimesWithRate
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 ConditionalDistribution
 -----------------------
 .. autoclass:: pyro.distributions.ConditionalDistribution
@@ -102,6 +116,20 @@ DiscreteHMM
 EmpiricalDistribution
 ---------------------
 .. autoclass:: pyro.distributions.Empirical
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ExtendedBetaBinomial
+--------------------
+.. autoclass:: pyro.distributions.ExtendedBetaBinomial
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ExtendedBinomial
+----------------
+.. autoclass:: pyro.distributions.ExtendedBinomial
     :members:
     :undoc-members:
     :show-inheritance:
@@ -148,6 +176,13 @@ GaussianScaleMixture
     :undoc-members:
     :show-inheritance:
 
+ImproperUniform
+---------------
+.. autoclass:: pyro.distributions.improper_uniform.ImproperUniform
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 IndependentHMM
 --------------
 .. autoclass:: pyro.distributions.IndependentHMM
@@ -172,6 +207,13 @@ LinearHMM
 LKJCorrCholesky
 ---------------
 .. autoclass:: pyro.distributions.LKJCorrCholesky
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+MaskedDistribution
+------------------
+.. autoclass:: pyro.distributions.MaskedDistribution
     :members:
     :undoc-members:
     :show-inheritance:
@@ -246,16 +288,16 @@ Stable
     :undoc-members:
     :show-inheritance:
 
-Unit
-----
-.. autoclass:: pyro.distributions.Unit
+TruncatedPolyaGamma
+-------------------
+.. autoclass:: pyro.distributions.TruncatedPolyaGamma
     :members:
     :undoc-members:
     :show-inheritance:
 
-VonMises
---------
-.. autoclass:: pyro.distributions.VonMises
+Unit
+----
+.. autoclass:: pyro.distributions.Unit
     :members:
     :undoc-members:
     :show-inheritance:
@@ -312,6 +354,13 @@ ELUTransform
     :undoc-members:
     :show-inheritance:
 
+HaarTransform
+-------------
+.. autoclass:: pyro.distributions.transforms.HaarTransform
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 LeakyReLUTransform
 ------------------
 .. autoclass:: pyro.distributions.transforms.LeakyReLUTransform
@@ -329,13 +378,6 @@ LowerCholeskyAffine
 Permute
 -------
 .. autoclass:: pyro.distributions.transforms.Permute
-    :members:
-    :undoc-members:
-    :show-inheritance:
-
-TanhTransform
--------------
-.. autoclass:: pyro.distributions.transforms.TanhTransform
     :members:
     :undoc-members:
     :show-inheritance:
@@ -378,6 +420,48 @@ BlockAutoregressive
     :undoc-members:
     :show-inheritance:
 
+ConditionalAffineAutoregressive
+-------------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalAffineAutoregressive
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalAffineCoupling
+-------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalAffineCoupling
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalGeneralizedChannelPermute
+------------------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalGeneralizedChannelPermute
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalHouseholder
+----------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalHouseholder
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalMatrixExponential
+----------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalMatrixExponential
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalNeuralAutoregressive
+-------------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalNeuralAutoregressive
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
 ConditionalPlanar
 -----------------
 .. autoclass:: pyro.distributions.transforms.ConditionalPlanar
@@ -388,6 +472,20 @@ ConditionalPlanar
 ConditionalRadial
 -----------------
 .. autoclass:: pyro.distributions.transforms.ConditionalRadial
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalSpline
+-----------------
+.. autoclass:: pyro.distributions.transforms.ConditionalSpline
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+ConditionalSplineAutoregressive
+-------------------------------
+.. autoclass:: pyro.distributions.transforms.ConditionalSplineAutoregressive
     :members:
     :undoc-members:
     :show-inheritance:
@@ -409,6 +507,13 @@ GeneralizedChannelPermute
 Householder
 -----------
 .. autoclass:: pyro.distributions.transforms.Householder
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+MatrixExponential
+-----------------
+.. autoclass:: pyro.distributions.transforms.MatrixExponential
     :members:
     :undoc-members:
     :show-inheritance:
@@ -437,6 +542,27 @@ Polynomial
 Radial
 ------
 .. autoclass:: pyro.distributions.transforms.Radial
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+Spline
+------
+.. autoclass:: pyro.distributions.transforms.Spline
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+SplineAutoregressive
+--------------------
+.. autoclass:: pyro.distributions.transforms.SplineAutoregressive
+    :members:
+    :undoc-members:
+    :show-inheritance:
+
+SplineCoupling
+--------------
+.. autoclass:: pyro.distributions.transforms.SplineCoupling
     :members:
     :undoc-members:
     :show-inheritance:
@@ -488,6 +614,30 @@ block_autoregressive
 --------------------
 .. autofunction:: pyro.distributions.transforms.block_autoregressive
 
+conditional_affine_autoregressive
+---------------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_affine_autoregressive
+
+conditional_affine_coupling
+---------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_affine_coupling
+
+conditional_generalized_channel_permute
+---------------------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_generalized_channel_permute
+
+conditional_householder
+-----------------------
+.. autofunction:: pyro.distributions.transforms.conditional_householder
+
+conditional_matrix_exponential
+------------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_matrix_exponential
+
+conditional_neural_autoregressive
+---------------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_neural_autoregressive
+
 conditional_planar
 ------------------
 .. autofunction:: pyro.distributions.transforms.conditional_planar
@@ -495,6 +645,14 @@ conditional_planar
 conditional_radial
 ------------------
 .. autofunction:: pyro.distributions.transforms.conditional_radial
+
+conditional_spline
+------------------
+.. autofunction:: pyro.distributions.transforms.conditional_spline
+
+conditional_spline_autoregressive
+---------------------------------
+.. autofunction:: pyro.distributions.transforms.conditional_spline_autoregressive
 
 elu
 ---
@@ -511,6 +669,10 @@ householder
 leaky_relu
 ----------
 .. autofunction:: pyro.distributions.transforms.leaky_relu
+
+matrix_exponential
+------------------
+.. autofunction:: pyro.distributions.transforms.matrix_exponential
 
 neural_autoregressive
 ---------------------
@@ -532,10 +694,18 @@ radial
 ------
 .. autofunction:: pyro.distributions.transforms.radial
 
+spline
+------
+.. autofunction:: pyro.distributions.transforms.spline
+
+spline_autoregressive
+---------------------
+.. autofunction:: pyro.distributions.transforms.spline_autoregressive
+
+spline_coupling
+---------------
+.. autofunction:: pyro.distributions.transforms.spline_coupling
+
 sylvester
 ---------
 .. autofunction:: pyro.distributions.transforms.sylvester
-
-tanh
-----
-.. autofunction:: pyro.distributions.transforms.tanh

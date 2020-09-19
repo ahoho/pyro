@@ -4,6 +4,7 @@
 import contextlib
 import numbers
 import os
+import re
 import shutil
 import tempfile
 import warnings
@@ -29,7 +30,18 @@ EXAMPLES_DIR = os.path.join(os.path.dirname(TESTS_DIR), 'examples')
 
 
 def xfail_param(*args, **kwargs):
+    kwargs.setdefault("reason", "unknown")
     return pytest.param(*args, marks=[pytest.mark.xfail(**kwargs)])
+
+
+def str_erase_pointers(x):
+    """
+    Print a string representation of ``x`` but remove pointers from function
+    names, since the pointers have different values on different pytest xdist
+    workers and break test collection. This is useful as the ``ids`` arg to
+    ``@pytest.mark.parametrize``.
+    """
+    return re.sub(" at 0x[a-f0-9]+", "", str(x))
 
 
 def skipif_param(*args, **kwargs):
@@ -58,6 +70,13 @@ def TemporaryDirectory():
 
 requires_cuda = pytest.mark.skipif(not torch.cuda.is_available(),
                                    reason="cuda is not available")
+
+try:
+    import horovod
+except ImportError:
+    horovod = None
+requires_horovod = pytest.mark.skipif(horovod is None,
+                                      reason="horovod is not available")
 
 
 def get_cpu_type(t):

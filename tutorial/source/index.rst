@@ -16,6 +16,7 @@ Welcome to Pyro Examples and Tutorials!
    svi_part_ii
    svi_part_iii
    tensor_shapes
+   mle_map
 
 .. toctree::
    :maxdepth: 2
@@ -26,6 +27,10 @@ Welcome to Pyro Examples and Tutorials!
    jit
    minipyro
    effect_handlers
+   modules
+   normalizing_flows_i
+   contrib_funsor_intro_i
+   contrib_funsor_intro_ii
 
 .. toctree::
    :maxdepth: 2
@@ -38,6 +43,7 @@ Welcome to Pyro Examples and Tutorials!
    air
    ss-vae
    stable
+   cvae
 
 .. toctree::
    :maxdepth: 2
@@ -59,7 +65,8 @@ Welcome to Pyro Examples and Tutorials!
    working_memory
    elections
    dirichlet_process_mixture
-   boosting_bbvi	
+   boosting_bbvi
+   epi_intro
 
 .. toctree::
    :maxdepth: 2
@@ -77,7 +84,11 @@ Welcome to Pyro Examples and Tutorials!
    forecast_simple
    timeseries
    smcfilter
-
+   epi_sir
+   epi_regional
+   sir_hmc
+   toy_mixture_model_discrete_enumeration
+   svi_horovod
 
 Indices and tables
 ==================

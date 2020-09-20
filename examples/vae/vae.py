@@ -237,6 +237,10 @@ def main(args):
     pyro.set_rng_seed(args.seed)
     pyro.enable_validation(__debug__)
 
+    model_dir = args.temp_model_dir or args.output_dir
+    Path(model_dir).mkdir(exist_ok=True, parents=True)
+    Path(args.output_dir).mkdir(exist_ok=True, parents=True)
+
     # load the data
     x_train = load_sparse(Path(args.data_dir, args.counts_fpath))
     x_train = torch.tensor(x_train.astype(np.float32).todense())
@@ -376,7 +380,6 @@ def main(args):
             dev_metrics['tu'] = max(tu, dev_metrics['tu'])
 
             if dev_metrics[target] == {"loss": dev_loss, "npmi": npmi, "tu": tu}[target]:
-                model_dir = args.temp_model_dir or args.output_dir
                 pyro.get_param_store().save(Path(model_dir, "model.pt"))
 
             result_message.update({
@@ -387,12 +390,18 @@ def main(args):
             results.append((epoch, epoch_loss, dev_loss, npmi, tu))
         t.set_postfix(result_message)
 
-    results_df = pd.DataFrame(
-        results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
-    )
-    results_df.to_csv(Path(args.output_dir, "results.csv"))
+    if results:
+        results_df = pd.DataFrame(
+            results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
+        )
+        results_df.to_csv(Path(args.output_dir, "results.csv"))
+        t.write(
+            f"Best NPMI: {results_df.dev_npmi.max():0.4f} @ {np.argmax(results_df.dev_npmi)}\n"
+            f"Best TU @ this NPMI: {results_df.dev_tu[np.argmax(results_df.dev_npmi)]:0.4f}"
+        )
     if args.temp_model_dir:
         shutil.copyfile(Path(model_dir, "model.pt"), Path(args.output_dir, "model.pt"))
+
     return vae, dev_metrics
 
 

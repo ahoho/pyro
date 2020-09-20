@@ -1,10 +1,13 @@
-import argparse
 import json
+import shutil
 from pathlib import Path
+from pyro.primitives import get_param_store
 
-from tqdm import tqdm
+from tqdm import trange
 
+import configargparse
 import numpy as np
+import pandas as pd
 from scipy import sparse
 
 from sklearn.feature_extraction.text import TfidfTransformer
@@ -165,7 +168,6 @@ class VAE(nn.Module):
         self.alpha_prior = args.alpha_prior
 
         self.encode_doc_reps = args.encode_doc_reps
-        self.doc_similarity_weight = args.doc_similarity_weight
         self.distillation_weight = args.distillation_weight
 
     # define the model p(x|z)p(z)
@@ -184,22 +186,13 @@ class VAE(nn.Module):
             x_recon = self.decoder(z, annealing_factor)
             # score against actual data
             if self.distillation_weight > 0:
+                # TODO: align with our KD
                 alpha = self.distillation_weight
                 doc_reps = doc_reps * (doc_reps > 1e-5).float()
                 pseudo_x = doc_reps * x.sum(1, keepdims=True)
                 x = (1 - alpha) * x + alpha * pseudo_x
 
             pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
-            
-            if self.doc_similarity_weight > 0:
-                
-                eye_mask = 1 - torch.eye(x.shape[0], device=x.device)
-                x_sim = eye_mask * (x_recon @ x_recon.T) # [bs x V] [V x bs] -> [bs x bs]
-                doc_sim = eye_mask * (doc_reps @ doc_reps.T)
-                with pyro.poutine.scale(None, self.similarity_weight):
-                    # TODO: revisit this sampling
-                    # TODO: more emphasis on dissimilarity than similarity
-                    pyro.sample("similarity", dist.Normal(x_sim, scale=0.1).to_event(1), obs=doc_sim)
 
             return x_recon
 
@@ -244,12 +237,8 @@ def main(args):
     pyro.set_rng_seed(args.seed)
     pyro.enable_validation(__debug__)
 
-    if args.save_all:
-        with open(__file__, "r") as infile:
-            this_file = infile.read()
-
     # load the data
-    x_train = load_sparse(args.counts_fpath)
+    x_train = load_sparse(Path(args.data_dir, args.counts_fpath))
     x_train = torch.tensor(x_train.astype(np.float32).todense())
     n_train = x_train.shape[0]
 
@@ -267,12 +256,12 @@ def main(args):
         args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
     if args.dev_counts_fpath:
-        x_dev = load_sparse(args.dev_counts_fpath)
+        x_dev = load_sparse(Path(args.data_dir, args.dev_counts_fpath))
         x_dev = torch.tensor(x_dev.astype(np.float32).todense())
         n_dev = x_dev.shape[0]
         args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
-    if args.encode_doc_reps or args.doc_similarity_weight > 0 or args.distillation_weight > 0:
+    if args.encode_doc_reps or args.distillation_weight > 0:
         if args.doc_reps_source == "tf-idf":
             tfidf = TfidfTransformer()
             tfidf.fit(x_train)
@@ -297,7 +286,7 @@ def main(args):
 
     # load the vocabulary
     if args.vocab_fpath is not None:
-        vocab = load_json(args.vocab_fpath)
+        vocab = load_json(Path(args.data_dir, args.vocab_fpath))
 
     # load the embeddings
     if args.pretrained_embeddings is not None:
@@ -327,9 +316,11 @@ def main(args):
         "npmi": 0,
         "tu": 0,
     }
+    target = args.dev_metric_target
 
     # training loop
-    for epoch in range(args.num_epochs):
+    t = trange(args.num_epochs, leave=True)
+    for epoch in t:
         # initialize loss accumulator
         random_idx = np.random.choice(n_train, size=n_train, replace=False)
         x_train = x_train[random_idx] #shuffle
@@ -354,7 +345,9 @@ def main(args):
         epoch_loss /= n_train
         train_elbo.append(epoch_loss)
 
+
         # evaluate on the dev set
+        result_message = {"tr loss": f"{epoch_loss:0.1f}"}
         if (args.dev_counts_fpath or args.dev_split > 0) and epoch % args.eval_step == 0:
             eval_batches = n_dev // args.batch_size
             
@@ -382,75 +375,72 @@ def main(args):
             dev_metrics['npmi'] = max(npmi, dev_metrics['npmi'])
             dev_metrics['tu'] = max(tu, dev_metrics['tu'])
 
-            result = (
-                f"{epoch}: tr loss: {epoch_loss:0.4f}, "
-                f"dev loss: {dev_loss:0.4f}, npmi: {npmi:0.4f}, tu: {tu:0.4f}"
-            )
-            print(result)
+            if dev_metrics[target] == {"loss": dev_loss, "npmi": npmi, "tu": tu}[target]:
+                model_dir = args.temp_model_dir or args.output_dir
+                pyro.get_param_store().save(Path(model_dir, "model.pt"))
+
+            result_message.update({
+                "dev loss": f"{dev_loss:0.1f}",
+                "npmi": f"{npmi:0.4f}",
+                "tu": f"{tu:0.4f}"
+            })
             results.append((epoch, epoch_loss, dev_loss, npmi, tu))
+        t.set_postfix(result_message)
 
-    if args.save_all:
-        from datetime import datetime
-
-        import pandas as pd
-        
-        now = datetime.now().strftime("%Y-%m-%d_%H%M")
-        outpath = Path(f"results/{now}")
-        outpath.mkdir()
-
-        with open(Path(outpath, "vae.py"), "w") as outfile:
-            outfile.write(this_file)
-        
-        save_json(args.__dict__, Path(outpath, "args.json"))
-        results_df = pd.DataFrame(
-            results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
-        )
-        results_df.to_csv(Path(outpath, "results.csv"))
-    
-    import ipdb; ipdb.set_trace()
+    results_df = pd.DataFrame(
+        results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
+    )
+    results_df.to_csv(Path(args.output_dir, "results.csv"))
+    if args.temp_model_dir:
+        shutil.copyfile(Path(model_dir, "model.pt"), Path(args.output_dir, "model.pt"))
     return vae, dev_metrics
 
 
 if __name__ == '__main__':
     assert pyro.__version__.startswith('1.4.0')
     # parse command line arguments
-    parser = argparse.ArgumentParser(description="parse args")
+    parser = configargparse.ArgParser(description="parse args")
 
-    parser.add_argument("-i", "--counts-fpath", default=None)
-    parser.add_argument("--vocab-fpath", default=None)
-    parser.add_argument("-d", "--dev-counts-fpath", default=None)
-    parser.add_argument("--dev-split", default=0.2, type=float)
-    parser.add_argument("--save-all", action="store_true", default=False)
-    
-    parser.add_argument("-k", "--num-topics", default=50, type=int)
-    
-    parser.add_argument("--encoder-hidden-dim", default=100, type=int)
-    parser.add_argument("--encoder-dropout", default=0.2, type=float)
-    parser.add_argument("--decoder-dropout", default=0.2, type=float)
-    parser.add_argument("--learn-bn-scale", default=False, action="store_true")
-    parser.add_argument("--alpha-prior", default=0.02, type=float)
-    parser.add_argument("--pretrained-embeddings-dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
-    parser.add_argument("--update-embeddings", action="store_true", default=False)
-    parser.add_argument("--second-hidden-layer", action="store_true", default=False)
-    
-    parser.add_argument("--encode-doc-reps", action="store_true", default=None)
-    parser.add_argument("--doc-similarity-weight", default=0.0, type=float)
-    parser.add_argument("--distillation-weight", default=0.0, type=float)
-    parser.add_argument("--doc-reps-source", default="tf-idf")
+    parser.add("-c", "--config", is_config_file=True, default=None)
+    parser.add("--output_dir", required=True, default=None)
+    parser.add("--temp_model_dir", default=None, help="Temporary model storage during run, when I/O bound")
 
-    parser.add_argument('-lr', '--learning-rate', default=0.002, type=float)
-    parser.add_argument("-b", "--batch-size", default=200, type=int)
-    parser.add_argument("-n", '--num-epochs', default=101, type=int)
-    parser.add_argument("--annealing-epochs", default=50, type=int)
-    parser.add_argument("--minimum-annealing-factor", default=0.01, type=float)
-    
-    parser.add_argument("--eval-step", default=1, type=int)
-    parser.add_argument("--npmi-words", default=10, type=int)
-    parser.add_argument("--tu-words", default=10, type=int)
 
-    parser.add_argument("--seed", default=42, type=int)
-    parser.add_argument('--cuda', action='store_true', default=False, help='whether to use cuda')
-    parser.add_argument('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
+    parser.add("--data_dir", default=None)
+    parser.add("-i", "--counts_fpath", default="train.npz")
+    parser.add("-v", "--vocab_fpath", default="train.vocab.json")
+    parser.add("-d", "--dev_counts_fpath", default="dev.npz")
+    parser.add("--dev_split", default=0.2, type=float)
+    
+    parser.add("-k", "--num_topics", default=50, type=int)
+    
+    parser.add("--encoder_hidden_dim", default=100, type=int)
+    parser.add("--encoder_dropout", default=0.2, type=float)
+    parser.add("--decoder_dropout", default=0.2, type=float)
+    parser.add("--learn_bn_scale", default=False, action="store_true")
+    parser.add("--alpha_prior", default=0.02, type=float)
+    parser.add("--pretrained_embeddings_dir", dest="pretrained_embeddings", default=None, help="directory containing vocab.json and vectors.npy")
+    parser.add("--update_embeddings", action="store_true", default=False)
+    parser.add("--second_hidden_layer", action="store_true", default=False)
+    
+    parser.add("--encode_doc_reps", action="store_true", default=False)
+    parser.add("--distillation_weight", default=0.0, type=float)
+    parser.add("--doc_reps_source", default="tf_idf")
+
+    parser.add('-lr', '--learning_rate', default=0.002, type=float)
+    parser.add("-b", "--batch_size", default=200, type=int)
+    parser.add("-n", '--num_epochs', default=101, type=int)
+    parser.add("--annealing_epochs", default=50, type=int)
+    parser.add("--minimum_annealing_factor", default=0.01, type=float)
+    
+    parser.add("--eval_step", default=1, type=int)
+    parser.add("--dev_metric_target", default="npmi", choices=["npmi", "loss", "tu"])
+    parser.add("--npmi_words", default=10, type=int)
+    parser.add("--tu_words", default=10, type=int)
+
+    parser.add("--seed", default=42, type=int)
+    parser.add('--cuda', action='store_true', default=False, help='whether to use cuda')
+    parser.add('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
     args = parser.parse_args()
 
     model, metrics = main(args)

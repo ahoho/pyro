@@ -409,7 +409,10 @@ def main(args):
 if __name__ == '__main__':
     assert pyro.__version__.startswith('1.4.0')
     # parse command line arguments
-    parser = configargparse.ArgParser(description="parse args")
+    parser = configargparse.ArgParser(
+        description="parse args",
+        config_file_parser_class=configargparse.YAMLConfigFileParser
+    )
 
     parser.add("-c", "--config", is_config_file=True, default=None)
     parser.add("--output_dir", required=True, default=None)

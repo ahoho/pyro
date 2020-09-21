@@ -19,7 +19,7 @@ processed
 raw
 *.pkl
 topic-vae-runs
-
+examples/vae/test*
 # Logs
 logs
 *.log

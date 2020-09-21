@@ -1,5 +1,6 @@
 import json
 import shutil
+import warnings
 from pathlib import Path
 from pyro.primitives import get_param_store
 
@@ -447,9 +448,50 @@ if __name__ == '__main__':
     parser.add("--npmi_words", default=10, type=int)
     parser.add("--tu_words", default=10, type=int)
 
-    parser.add("--seed", default=42, type=int)
+    parser.add("--run_seeds", default=[42], type=int, nargs="+", help="Seeds to use for each run")
     parser.add('--cuda', action='store_true', default=False, help='whether to use cuda')
     parser.add('--jit', action='store_true', default=False, help='whether to use PyTorch jit')
     args = parser.parse_args()
 
-    model, metrics = main(args)
+    # Filter two pyro warnings
+    warnings.filterwarnings("ignore", message=".*was not registered in the param store because requires_grad=False.*")
+    warnings.filterwarnings("ignore", message=".*torch.tensor results are registered as constants in the trace.*")
+
+    # Run for each seed
+    base_output_dir = args.output_dir
+    Path(base_output_dir).mkdir(exist_ok=True, parents=True)
+
+    for seed in args.run_seeds:
+        # make subdirectories for each run
+        args.seed = seed
+        output_dir = Path(base_output_dir, str(seed))
+        output_dir.mkdir(exist_ok=True, parents=True)
+        args.output_dir = str(output_dir)
+    
+        # train
+        model, metrics = main(args)
+    
+    # Aggregate results
+    agg_run_results = []
+    for seed in args.run_seeds:
+        output_dir = Path(base_output_dir, str(seed))
+        results = pd.read_csv(Path(output_dir, "results.csv"))
+        agg_run_results.append({
+            "seed": seed,
+            "best_npmi": np.max(results.dev_npmi),
+            "best_npmi_epoch": np.argmax(results.dev_npmi),
+            "best_tu_at_best_npmi": results.dev_tu[np.argmax(results.dev_npmi)],
+            "best_tu": np.max(results.dev_tu),
+            "best_tu_epoch": np.argmax(results.dev_tu),
+            "best_npmi_at_best_tu": results.dev_npmi[np.argmax(results.dev_tu)],
+        })
+
+    agg_run_results_df = pd.DataFrame.from_records(agg_run_results)
+    agg_run_results_df.to_csv(Path(base_output_dir, "run_results.csv"))
+    print(
+        f"\n=== Results over {len(args.run_seeds)} runs ===\n"
+        f"Mean NPMI: "
+        f"{agg_run_results_df.best_npmi.mean():0.4f} ({agg_run_results_df.best_npmi.std():0.4f}) "
+        f"@ {np.mean(agg_run_results_df.best_npmi_epoch):0.1f} / {args.num_epochs}\n"
+        f"Mean best TU @ best NPMI: {agg_run_results_df.best_tu_at_best_npmi.mean():0.4f}"
+    )

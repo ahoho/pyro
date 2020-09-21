@@ -492,6 +492,6 @@ if __name__ == '__main__':
         f"\n=== Results over {len(args.run_seeds)} runs ===\n"
         f"Mean NPMI: "
         f"{agg_run_results_df.best_npmi.mean():0.4f} ({agg_run_results_df.best_npmi.std():0.4f}) "
-        f"@ {np.mean(agg_run_results_df.best_npmi_epoch):0.1f} / {args.num_epochs}\n"
+        f"@ epoch {np.mean(agg_run_results_df.best_npmi_epoch):0.1f} / {args.num_epochs}\n"
         f"Mean best TU @ best NPMI: {agg_run_results_df.best_tu_at_best_npmi.mean():0.4f}"
     )

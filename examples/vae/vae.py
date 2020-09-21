@@ -396,7 +396,7 @@ def main(args):
             results, columns=["epoch", "train_loss", "dev_loss", "dev_npmi", "dev_tu"]
         )
         results_df.to_csv(Path(args.output_dir, "results.csv"))
-        t.write(
+        print(
             f"Best NPMI: {results_df.dev_npmi.max():0.4f} @ {np.argmax(results_df.dev_npmi)}\n"
             f"Best TU @ this NPMI: {results_df.dev_tu[np.argmax(results_df.dev_npmi)]:0.4f}"
         )
@@ -464,7 +464,7 @@ if __name__ == '__main__':
     base_output_dir = args.output_dir
     Path(base_output_dir).mkdir(exist_ok=True, parents=True)
 
-    for seed in args.run_seeds:
+    for i, seed in enumerate(args.run_seeds):
         # make subdirectories for each run
         args.seed = seed
         output_dir = Path(base_output_dir, str(seed))
@@ -472,6 +472,7 @@ if __name__ == '__main__':
         args.output_dir = str(output_dir)
     
         # train
+        print(f"\nOn run {i} of {len(args.run_seeds)}")
         model, metrics = main(args)
     
     # Aggregate results

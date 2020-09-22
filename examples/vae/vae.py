@@ -231,6 +231,20 @@ def calculate_annealing_factor(args, epoch, minibatch, batches_per_epoch):
 
     return annealing_factor
 
+
+def save_topics(vae, vocab, fpath, n=100):
+    """
+    Save topics to disk
+    """
+    if not isinstance(vocab, np.ndarray):
+        vocab = np.array(vocab)
+    beta = vae.decoder.eta_layer.weight.detach().numpy().T
+    with open(fpath, "w") as outfile:
+        for v in beta:
+            topic = vocab[v.argsort()[::-1][:n]].tolist()
+            outfile.write(" ".join(topic) + "\n")
+
+
 def main(args):
     # clear param store
     pyro.clear_param_store()
@@ -290,8 +304,10 @@ def main(args):
         doc_reps_train, doc_reps_dev = torch.tensor([]), torch.tensor([])
 
     # load the vocabulary
+    vocab = None
     if args.vocab_fpath is not None:
         vocab = load_json(Path(args.data_dir, args.vocab_fpath))
+        vocab = np.array(vocab)
 
     # load the embeddings
     if args.pretrained_embeddings is not None:
@@ -382,6 +398,7 @@ def main(args):
 
             if dev_metrics[target] == {"loss": dev_loss, "npmi": npmi, "tu": tu}[target]:
                 pyro.get_param_store().save(Path(model_dir, "model.pt"))
+                save_topics(vae, vocab, Path(model_dir, "topics.txt"))
 
             result_message.update({
                 "dev loss": f"{dev_loss:0.1f}",
@@ -402,6 +419,7 @@ def main(args):
         )
     if args.temp_model_dir:
         shutil.copyfile(Path(model_dir, "model.pt"), Path(args.output_dir, "model.pt"))
+        shutil.copyfile(Path(model_dir, "topics.txt"), Path(args.output_dir, "topics.txt"))
 
     return vae, dev_metrics
 

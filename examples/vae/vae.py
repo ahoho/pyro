@@ -11,14 +11,13 @@ import numpy as np
 import pandas as pd
 from scipy import sparse
 
-from sklearn.feature_extraction.text import TfidfTransformer
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 import pyro
 import pyro.distributions as dist
+from pyro import poutine
 from pyro.infer import SVI, JitTrace_ELBO, Trace_ELBO
 from pyro.optim import Adam
 
@@ -64,7 +63,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         # setup linear transformations
-        encoder_input_dim = args.vocab_size * 2 if args.encode_doc_reps else args.vocab_size
+        encoder_input_dim = args.vocab_size * 2 if args.kd_encode_logits else args.vocab_size
         self.embedding_layer = nn.Linear(encoder_input_dim, args.embeddings_dim)
 
         # map embeddings
@@ -127,14 +126,14 @@ class Decoder(nn.Module):
         self.eta_bn_layer.weight.data.copy_(torch.ones(args.vocab_size))
         self.eta_bn_layer.weight.requires_grad = args.learn_bn_scale
 
-    def forward(self, z, annealing_factor=0.0):
+    def forward(self, z, temp=1., annealing_factor=0.0):
         z_do = self.z_drop(z)
         eta = self.eta_layer(z_do)
         eta_bn = self.eta_bn_layer(eta)
 
         x_recon = (
-            (annealing_factor) * F.softmax(eta, dim=-1)
-            + (1 - annealing_factor) * F.softmax(eta_bn, dim=-1)
+            (annealing_factor) * F.softmax(eta / temp, dim=-1)
+            + (1 - annealing_factor) * F.softmax(eta_bn / temp, dim=-1)
         )
         return x_recon
     
@@ -168,11 +167,12 @@ class VAE(nn.Module):
         self.num_topics = args.num_topics
         self.alpha_prior = args.alpha_prior
 
-        self.encode_doc_reps = args.encode_doc_reps
-        self.distillation_weight = args.distillation_weight
+        self.kd_weight = args.kd_weight
+        self.kd_temp = args.kd_temp
+        self.encode_logits = args.kd_encode_logits
 
     # define the model p(x|z)p(z)
-    def model(self, x, doc_reps, annealing_factor=1.0):
+    def model(self, x, logits=None, annealing_factor=1.0):
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
         with pyro.plate("data", x.shape[0]):
@@ -186,21 +186,23 @@ class VAE(nn.Module):
             # decode the latent code z
             x_recon = self.decoder(z, annealing_factor)
             # score against actual data
-            if self.distillation_weight > 0:
-                # TODO: align with our KD
-                alpha = self.distillation_weight
-                doc_reps = doc_reps * (doc_reps > 1e-5).float()
-                pseudo_x = doc_reps * x.sum(1, keepdims=True)
-                x = (1 - alpha) * x + alpha * pseudo_x
+            a = 0. if logits is None else self.kd_weight
+            with poutine.scale(None, 1 - a):
+                pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
 
-            pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
+            if logits is not None:
+                temp = self.kd_temp
+                kd_x_recon = self.decoder(z, temp, annealing_factor)
+                kd_x = F.softmax(logits / temp, dim=-1) * x.sum(1, keepdims=True)
+                with poutine.scale(None, a * temp * temp):
+                    pyro.sample("kd_obs", CollapsedMultinomial(1., kd_x_recon), obs=kd_x)
 
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x, doc_reps, annealing_factor=0.0):
+    def guide(self, x, logits, annealing_factor=0.0):
         # register PyTorch module `encoder` with Pyro
-        input = torch.cat([x, doc_reps], dim=1) if self.encode_doc_reps else x
+        input = torch.cat([x, logits], dim=1) if self.encode_logits else x
         pyro.module("encoder", self.encoder)
         with pyro.plate("data", input.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
@@ -280,34 +282,27 @@ def main(args):
         n_dev = x_dev.shape[0]
         args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
-    if args.encode_doc_reps or args.distillation_weight > 0:
-        if args.doc_reps_source == "tf-idf":
-            tfidf = TfidfTransformer()
-            tfidf.fit(x_train)
-
-            doc_reps_train = torch.tensor(
-                tfidf.transform(x_train).todense(), dtype=torch.float
-            )
-            doc_reps_dev = torch.tensor(
-                tfidf.transform(x_dev).todense(), dtype=torch.float
-            )
-        else:
-            doc_reps_train = torch.tensor(
-                np.load(Path(args.doc_reps_source, "train.npy"))
-            )
-            doc_reps_dev = torch.tensor(
-                np.load(Path(args.doc_reps_source, "dev.npy"))
-            )
-            assert(doc_reps_train.shape[0] == x_train.shape[0])
-            assert(doc_reps_dev.shape[0] == x_dev.shape[0])
-    else:
-        doc_reps_train, doc_reps_dev = torch.tensor([]), torch.tensor([])
-
     # load the vocabulary
     vocab = None
     if args.vocab_fpath is not None:
         vocab = load_json(Path(args.data_dir, args.vocab_fpath))
         vocab = np.array(vocab)
+
+    # load logits for knowledge distillation
+    logits_train = None
+    if args.kd_logits_path:
+        logits_train = np.load(args.kd_logits_path)
+        assert(logits_train.shape[0] == x_train.shape[0])
+
+        # keep only the top logits, as a fraction of the total doc length
+        if args.kd_logits_clipping:
+            doc_lens = (x_train > 0).numpy().sum(1).reshape(-1)
+            for i, (row, total) in enumerate(zip(logits_train, doc_lens)):
+                k = args.kd_logits_clipping * total
+                if k < len(vocab):
+                    min_logit = np.quantile(row, 1 - k / len(vocab))
+                    logits_train[i, logits_train[i] < min_logit] = -np.inf
+        logits_train = torch.tensor(logits_train)
 
     # load the embeddings
     if args.pretrained_embeddings is not None:
@@ -345,7 +340,9 @@ def main(args):
         # initialize loss accumulator
         random_idx = np.random.choice(n_train, size=n_train, replace=False)
         x_train = x_train[random_idx] #shuffle
-        doc_reps_train = doc_reps_train[random_idx] if len(doc_reps_train) > 0 else doc_reps_train
+        if logits_train is not None:
+            logits_train = logits_train[random_idx]
+
         train_batches = n_train // args.batch_size
 
         epoch_loss = 0.
@@ -353,14 +350,17 @@ def main(args):
             annealing_factor = calculate_annealing_factor(args, epoch, i, train_batches)
             # if on GPU put mini-batch into CUDA memory
             x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
-            doc_reps_batch = doc_reps_train[i * args.batch_size:(i + 1) * args.batch_size]
+
+            logits_batch = None
+            if logits_train is not None:
+                logits_batch = logits_train[i * args.batch_size:(i + 1) * args.batch_size]
 
             if args.cuda:
                 x_batch = x_batch.cuda()
-                doc_reps_batch = doc_reps_batch.cuda()
+                logits_batch = logits_batch.cuda()
             # do ELBO gradient and accumulate loss
             annealing_factor = torch.tensor(annealing_factor, device=x_batch.device)
-            epoch_loss += svi.step(x_batch, doc_reps_batch, annealing_factor)
+            epoch_loss += svi.step(x_batch, logits_batch, annealing_factor)
 
         # report training diagnostics
         epoch_loss /= n_train
@@ -376,11 +376,9 @@ def main(args):
             dev_loss = 0.
             for i in range(eval_batches):
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
-                doc_reps_batch = doc_reps_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()
-                    doc_reps_batch = doc_reps_batch.cuda()
-                dev_loss += svi.evaluate_loss(x_batch, doc_reps_batch, annealing_factor)
+                dev_loss += svi.evaluate_loss(x_batch, None, annealing_factor)
 
             dev_loss /= n_dev
 
@@ -454,9 +452,12 @@ if __name__ == '__main__':
     parser.add("--update_embeddings", action="store_true", default=False)
     parser.add("--second_hidden_layer", action="store_true", default=False)
     
-    parser.add("--encode_doc_reps", action="store_true", default=False)
-    parser.add("--distillation_weight", default=0.0, type=float)
-    parser.add("--doc_reps_source", default="tf_idf")
+    # Knowledge distillation settings
+    parser.add("--kd_logits_path", default=None)
+    parser.add("--kd_weight", default=0.5, type=float)
+    parser.add("--kd_temp", default=1.0, type=float)
+    parser.add("--kd_logits_clipping", default=None, type=float)
+    parser.add("--kd_encode_logits", action="store_true", default=False)
 
     parser.add('-lr', '--learning_rate', default=0.002, type=float)
     parser.add("-b", "--batch_size", default=200, type=int)

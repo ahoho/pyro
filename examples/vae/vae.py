@@ -238,7 +238,7 @@ def save_topics(vae, vocab, fpath, n=100):
     """
     if not isinstance(vocab, np.ndarray):
         vocab = np.array(vocab)
-    beta = vae.decoder.eta_layer.weight.detach().numpy().T
+    beta = vae.decoder.eta_layer.weight.cpu().detach().numpy().T
     with open(fpath, "w") as outfile:
         for v in beta:
             topic = vocab[v.argsort()[::-1][:n]].tolist()

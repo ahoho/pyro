@@ -149,7 +149,7 @@ class CollapsedMultinomial(dist.Multinomial):
     element of `value` as an independent one-hot draw (instead of Multinomial(n, probs))
     """
     def log_prob(self, value):
-        return ((self.probs.log() + 1e-10) * value).sum(-1)
+        return ((self.probs + 1e-10).log() * value).sum(-1)
 
 
 # define a PyTorch module for the VAE

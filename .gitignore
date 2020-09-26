@@ -1,4 +1,5 @@
 run_outputs*
+topic-vae-runs
 .DS_Store
 .benchmarks
 data

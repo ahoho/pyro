@@ -1,6 +1,6 @@
 import numpy as np
 
-def compute_npmi_at_n_during_training(beta, ref_counts, n=10, smoothing=0.01):
+def compute_npmi_at_n_during_training(beta, ref_counts, n=10, smoothing=0.01, return_mean=False):
 
     n_docs, _ = ref_counts.shape
 
@@ -24,7 +24,7 @@ def compute_npmi_at_n_during_training(beta, ref_counts, n=10, smoothing=0.01):
                     npmi = (np.log10(n_docs) + np.log10(c12) - np.log10(c1) - np.log10(c2)) / (np.log10(n_docs) - np.log10(c12))
                 npmi_vals.append(npmi)
         npmi_means.append(np.mean(npmi_vals))
-    return np.mean(npmi_means)
+    return np.mean(npmi_means) if return_mean else npmi_means
 
 def compute_tu(topics, l=10):
     """
@@ -51,3 +51,15 @@ def compute_tr(topics, l=10):
             w_counts += np.sum([w in topics_j[:l] for j, topics_j in enumerate(topics) if j != i]) # count(k, l)
         tr_results.append((1 / (k - 1)) * w_counts)
     return tr_results
+
+
+def compute_topic_overlap(topics, word_overlap_threshold=10, n=10):
+    """
+    Calculate topic overlap
+    """
+    overlapping_topics = set()
+    for i, t_i in enumerate(topics):
+        for j, t_j in enumerate(topics[i+1:], start=i+1):
+            if len(set(t_i[:n]) & set(t_j[:n])) >= word_overlap_threshold:
+                overlapping_topics |= set([i, j])
+    return len(overlapping_topics)

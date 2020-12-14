@@ -17,7 +17,7 @@ from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tu, c
 
 logger = logging.getLogger(__name__)
 
-PATH_TO_MALLET_BINARY = "   "
+PATH_TO_MALLET_BINARY = "/workspace/kd-topic-modeling/Mallet/bin/mallet"
 
 def load_sparse(input_filename):
     npy = np.load(input_filename)
@@ -78,11 +78,9 @@ def main(args):
             p=(1-args.dev_split, args.dev_split),
         )
         x_train, x_dev = x_train[split_idx], x_train[~split_idx]
-        args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
     if args.dev_counts_fpath:
         x_dev = load_sparse(Path(args.data_dir, args.dev_counts_fpath))
-        args.max_doc_length = max(args.max_doc_length, int(x_dev.max()))
 
     x_train = Sparse2Corpus(x_train, documents_columns=False)
     x_dev = np.array(x_dev.todense())
@@ -109,12 +107,13 @@ def main(args):
 
 
     if args.model == "mallet":
-        lda = LdaMallet(
+        lda = LdaMalletWithBeta(
             mallet_path=PATH_TO_MALLET_BINARY,
             corpus=x_train,
             num_topics=args.num_topics,
             id2word=vocab,
             alpha=args.alpha,
+            beta=args.beta,
             optimize_interval=args.optimize_interval,
             topic_threshold=0.,
             iterations=args.iterations,
@@ -127,23 +126,24 @@ def main(args):
     topic_terms = [word_probs.argsort()[::-1] for word_probs in topics]
     npmi = compute_npmi_at_n_during_training(topics, x_dev, n=args.n_eval_words, smoothing=0.)
     tu = compute_tu(topic_terms, l=args.n_eval_words)
-    outputs = {
-        'beta': topics,
+    metrics = {
         'dev_npmi': npmi,
         'dev_npmi_mean': np.mean(npmi),
         'tu': tu,
         'tu_mean': np.mean(tu),
     }
     for th in args.topic_overlap_thresholds:
-        outputs[f'topic_overlap_at_{th}'] = compute_topic_overlap(
+        metrics[f'topic_overlap_at_{th}'] = compute_topic_overlap(
             topic_terms, word_overlap_threshold=th, n=args.n_eval_words
         )
-    save_json(outputs, Path(model_dir, "outputs.json"))
+    np.save(Path(model_dir, "beta.npy"), topics)
+    save_json(metrics, Path(model_dir, "metrics.json"))
 
     if args.temp_model_dir:
-        shutil.copyfile(Path(model_dir, "outputs.json"), Path(args.output_dir, "outputs.json"))
+        shutil.copyfile(Path(model_dir, "metrics.json"), Path(args.output_dir, "metrics.json"))
+        shutil.copyfile(Path(model_dir, "beta.npy"), Path(args.output_dir, "beta.npy"))
 
-    return lda, outputs
+    return lda, metrics
 
 if __name__ == "__main__":
     parser = configargparse.ArgParser(
@@ -232,14 +232,12 @@ if __name__ == "__main__":
         agg_run_results = []
         for seed in args.run_seeds:
             output_dir = Path(base_output_dir, str(seed))
-            outputs = load_json(Path(output_dir, "outputs.json"))
-            metrics = {
-                "seed": seed,
-                "npmi": outputs["dev_npmi_mean"],
-                "tu": outputs["tu_mean"],
-            }
-            for th in args.topic_overlap_thresholds:
-                metrics[f"topic_overlap_at_{th}"] = outputs[f"topic_overlap_at_{th}"]
+            try:
+                metrics = load_json(Path(output_dir, "metrics.json"))
+            except FileNotFoundError:
+                continue
+            metrics.pop("dev_npmi")
+            metrics.pop("tu")
             agg_run_results.append(metrics)
 
         agg_run_results_df = pd.DataFrame.from_records(agg_run_results)
@@ -247,5 +245,5 @@ if __name__ == "__main__":
         print(
             f"\n=== Results over {len(args.run_seeds)} runs ===\n"
             f"Mean NPMI: "
-            f"{agg_run_results_df.npmi.mean():0.4f} ({agg_run_results_df.npmi.std():0.4f}) "
+            f"{agg_run_results_df.dev_npmi_mean.mean():0.4f} ({agg_run_results_df.dev_npmi_mean.std():0.4f}) "
         )

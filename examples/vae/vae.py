@@ -63,7 +63,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         # setup linear transformations
-        encoder_input_dim = args.vocab_size * 2 if args.kd_encode_logits else args.vocab_size
+        encoder_input_dim = args.vocab_size
         self.embedding_layer = nn.Linear(encoder_input_dim, args.embeddings_dim)
 
         # map embeddings
@@ -167,12 +167,8 @@ class VAE(nn.Module):
         self.num_topics = args.num_topics
         self.alpha_prior = args.alpha_prior
 
-        self.kd_weight = args.kd_weight
-        self.kd_temp = args.kd_temp
-        self.encode_logits = args.kd_encode_logits
-
     # define the model p(x|z)p(z)
-    def model(self, x, logits=None, annealing_factor=1.0):
+    def model(self, x, annealing_factor=1.0):
         # register PyTorch module `decoder` with Pyro
         pyro.module("decoder", self.decoder)
         with pyro.plate("data", x.shape[0]):
@@ -186,27 +182,17 @@ class VAE(nn.Module):
             # decode the latent code z
             x_recon = self.decoder(z, annealing_factor)
             # score against actual data
-            a = 0. if logits is None else self.kd_weight
-            with poutine.scale(None, 1 - a):
-                pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
-
-            if logits is not None:
-                temp = self.kd_temp
-                kd_x_recon = self.decoder(z, temp, annealing_factor)
-                kd_x = F.softmax(logits / temp, dim=-1) * x.sum(1, keepdims=True)
-                with poutine.scale(None, a * temp * temp):
-                    pyro.sample("kd_obs", CollapsedMultinomial(1., kd_x_recon), obs=kd_x)
+            pyro.sample("obs", CollapsedMultinomial(1., x_recon), obs=x)
 
             return x_recon
 
     # define the guide (i.e. variational distribution) q(z|x)
-    def guide(self, x, logits, annealing_factor=0.0):
+    def guide(self, x, annealing_factor=0.0):
         # register PyTorch module `encoder` with Pyro
-        input = torch.cat([x, logits], dim=1) if self.encode_logits else x
         pyro.module("encoder", self.encoder)
-        with pyro.plate("data", input.shape[0]):
+        with pyro.plate("data", x.shape[0]):
             # use the encoder to get the parameters used to define q(z|x)
-            z = self.encoder(input)
+            z = self.encoder(x)
             # sample the latent code z
             pyro.sample("doc_topics", dist.Dirichlet(z))
 
@@ -288,22 +274,6 @@ def main(args):
         vocab = load_json(Path(args.data_dir, args.vocab_fpath))
         vocab = np.array(vocab)
 
-    # load logits for knowledge distillation
-    logits_train = None
-    if args.kd_logits_path:
-        logits_train = np.load(args.kd_logits_path)
-        assert(logits_train.shape[0] == x_train.shape[0])
-
-        # keep only the top logits, as a fraction of the total doc length
-        if args.kd_logits_clipping:
-            doc_lens = (x_train > 0).numpy().sum(1).reshape(-1)
-            for i, (row, total) in enumerate(zip(logits_train, doc_lens)):
-                k = args.kd_logits_clipping * total
-                if k < len(vocab):
-                    min_logit = np.quantile(row, 1 - k / len(vocab))
-                    logits_train[i, logits_train[i] < min_logit] = -np.inf
-        logits_train = torch.tensor(logits_train)
-
     # load the embeddings
     if args.pretrained_embeddings is not None:
         args.pretrained_embeddings = load_embeddings(args.pretrained_embeddings, vocab)
@@ -340,8 +310,6 @@ def main(args):
         # initialize loss accumulator
         random_idx = np.random.choice(n_train, size=n_train, replace=False)
         x_train = x_train[random_idx] #shuffle
-        if logits_train is not None:
-            logits_train = logits_train[random_idx]
 
         train_batches = n_train // args.batch_size
 
@@ -351,16 +319,11 @@ def main(args):
             # if on GPU put mini-batch into CUDA memory
             x_batch = x_train[i * args.batch_size:(i + 1) * args.batch_size]
 
-            logits_batch = None
-            if logits_train is not None:
-                logits_batch = logits_train[i * args.batch_size:(i + 1) * args.batch_size]
-
             if args.cuda:
                 x_batch = x_batch.cuda()
-                logits_batch = logits_batch.cuda()
             # do ELBO gradient and accumulate loss
             annealing_factor = torch.tensor(annealing_factor, device=x_batch.device)
-            epoch_loss += svi.step(x_batch, logits_batch, annealing_factor)
+            epoch_loss += svi.step(x_batch, annealing_factor)
 
         # report training diagnostics
         epoch_loss /= n_train
@@ -378,13 +341,13 @@ def main(args):
                 x_batch = x_dev[i * args.batch_size:(i + 1) * args.batch_size]
                 if args.cuda:
                     x_batch = x_batch.cuda()
-                dev_loss += svi.evaluate_loss(x_batch, None, annealing_factor)
+                dev_loss += svi.evaluate_loss(x_batch, annealing_factor)
 
             dev_loss /= n_dev
 
             # get npmi
             beta = vae.decoder.beta
-            npmi = compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words, smoothing=0.)
+            npmi = np.mean(compute_npmi_at_n_during_training(beta, x_dev.numpy(), n=args.npmi_words, smoothing=0.))
 
             # finally, topic-uniqueness
             topic_terms = [word_probs.argsort()[::-1] for word_probs in beta]
@@ -452,13 +415,6 @@ if __name__ == '__main__':
     parser.add("--update_embeddings", action="store_true", default=False)
     parser.add("--second_hidden_layer", action="store_true", default=False)
     
-    # Knowledge distillation settings
-    parser.add("--kd_logits_path", default=None)
-    parser.add("--kd_weight", default=0.5, type=float)
-    parser.add("--kd_temp", default=1.0, type=float)
-    parser.add("--kd_logits_clipping", default=None, type=float)
-    parser.add("--kd_encode_logits", action="store_true", default=False)
-
     parser.add('-lr', '--learning_rate', default=0.002, type=float)
     parser.add("-b", "--batch_size", default=200, type=int)
     parser.add("-n", '--num_epochs', default=101, type=int)

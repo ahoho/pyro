@@ -105,6 +105,8 @@ def main(args):
             alpha=args.alpha,
             eta=args.eta,
             minimum_probability=0.,
+            decay=args.decay,
+            passes=args.passes,
             iterations=args.iterations,
             random_state=args.seed,
             **extra_kwargs,
@@ -175,6 +177,8 @@ if __name__ == "__main__":
 
     ## Gensim-only
     parser.add("--eta", default=None)
+    parser.add("--passes", default=1, type=int)
+    parser.add("--decay", default=0.5, type=float)
 
     ## Mallet-only
     parser.add("--beta", default=0.01, type=float)

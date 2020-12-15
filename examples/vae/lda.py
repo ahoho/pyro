@@ -4,13 +4,14 @@ import shutil
 from pathlib import Path
 
 import configargparse
+from gensim.models import ldamodel
 import numpy as np
 import pandas as pd
 from scipy import sparse
 
 from gensim.matutils import Sparse2Corpus
 from gensim.models.wrappers import LdaMallet
-from gensim.models.ldamulticore import LdaMulticore
+from gensim.models.ldamulticore import LdaMulticore, LdaModel
 from gensim.utils import check_output
 
 from utils.topic_metrics import compute_npmi_at_n_during_training, compute_tu, compute_topic_overlap
@@ -34,7 +35,7 @@ def load_json(fpath):
 
 def save_json(obj, fpath):
     with open(fpath, "w") as outfile:
-        return json.dump(obj, outfile)
+        return json.dump(obj, outfile, indent=2)
 
 
 class LdaMalletWithBeta(LdaMallet):
@@ -91,20 +92,23 @@ def main(args):
         vocab = load_json(Path(args.data_dir, args.vocab_fpath))
         vocab = {i: v for i, v in enumerate(vocab)}
 
-    if args.model == "gensim":        
-        lda = LdaMulticore(
+    if args.model == "gensim":
+        extra_kwargs = {}
+        lda_class = LdaModel
+        if not args.alpha == "auto" and not args.eta == "auto":
+            lda_class = LdaMulticore
+            extra_kwargs["workers"] = args.workers
+        lda = lda_class(
             corpus=x_train,
             num_topics=args.num_topics,
             id2word=vocab,
-            alpha=args.gensim_alpha,
+            alpha=args.alpha,
             eta=args.eta,
-            decay=args.decay,
             minimum_probability=0.,
             iterations=args.iterations,
-            workers=args.workers,
             random_state=args.seed,
+            **extra_kwargs,
         )
-
 
     if args.model == "mallet":
         lda = LdaMalletWithBeta(
@@ -170,7 +174,7 @@ if __name__ == "__main__":
     parser.add("--iterations", default=None, type=int)
 
     ## Gensim-only
-    parser.add("--eta", default=None, type=int)
+    parser.add("--eta", default=None)
 
     ## Mallet-only
     parser.add("--beta", default=0.01, type=float)
